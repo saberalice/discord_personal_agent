@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "discord-personal-agent"
+version = "0.1.0"
+description = "Personal Discord channel inspection and future summaries"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "discord.py>=2.5,<3",
+    "langchain-core>=1,<2",
+    "langchain-groq>=1,<2",
+    "pydantic>=2,<3",
+    "python-dotenv>=1.1,<2",
+    "regex>=2026.9.10",
+    "tiktoken>=0.12,<1",
+]
+
+[project.scripts]
+discord-personal-agent = "discord_personal_agent.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

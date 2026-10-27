@@ -1,0 +1,29 @@
+timezone = "Asia/Taipei"
+
+# 複製為 config.toml，將範例 ID 換成自己的伺服器／文字頻道 ID。
+# 未列出的頻道不接受查詢；允許清單不會略過使用者自身權限。
+[allowed_channels]
+"111111111111111111" = [
+    "222222222222222222",
+    "333333333333333333",
+    "444444444444444444",
+]
+"555555555555555555" = ["666666666666666666"]
+
+# 自訂規則（全伺服器共用）；啟用時移除以下註解，並自行加到 config.toml。
+# [[privacy_rules]]
+# id = "project-name"
+# kind = "literal"
+# pattern = "虛構專案代號"
+# action = "block"
+#
+# [[privacy_rules]]
+# id = "internal-code"
+# kind = "regex"
+# pattern = 'INTERNAL-\d{4}'
+# action = "mask"
+
+# Groq 單批摘要的本機容量設定；不會增加供應商額度。
+[llm]
+max_input_tokens = 4000
+max_output_tokens = 4000

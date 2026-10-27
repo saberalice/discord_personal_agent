@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+config.toml
+*.db
+*.db-*
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+local-exports/
+discord-asr-integration-*.zip
