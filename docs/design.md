@@ -203,12 +203,13 @@ QUEUED → PREPARING → GENERATING → DELIVERING → SUCCEEDED
 只做兩項：
 
 1. `main.rs` 的 `tracing::info!(id, %text, "Transcribed")` 改為只記錄 id 與字數。
-2. Token 環境變數由 `DISCORD_TOKEN` 改讀 `DISCORD_BOT_TOKEN`。dotenvy 會由工作目錄往上層搜尋 `.env` 且不覆蓋既有環境變數，因此在 `voice/` 執行時可讀到專案根目錄的 `.env`。[dotenvy](https://docs.rs/dotenvy/0.15.7/dotenvy/fn.dotenv.html)
+2. Token 環境變數由 `DISCORD_TOKEN` 改讀 `DISCORD_BOT_TOKEN`，包含 `asr.rs` 啟動 llama-server 前的 `env_remove`（不同步改名會讓 llama-server 繼承 Token）。dotenvy 會由工作目錄往上層搜尋 `.env` 且不覆蓋既有環境變數，因此在 `voice/` 執行時可讀到專案根目錄的 `.env`。[dotenvy](https://docs.rs/dotenvy/0.15.7/dotenvy/fn.dotenv.html)
 
 ### 11.2 Python 端
 
 - **指令宣告**：discord.py `tree.sync()` 以 PUT 整份覆寫 global 指令。Python 在 CommandTree 宣告 `/join`、`/leave`，名稱、描述與 guild-only context 與 Rust 一致，callback 不回應；如此 sync 不會刪除 Rust 指令，也不會觸發 `CommandNotFound` 進入 `command_error` 搶先回應。以測試檢查兩邊名稱與 context 一致。
-- **啟動器**：`__main__` 在 Discord client 啟動前，以子程序在 `voice/` 工作目錄啟動 Rust release 執行檔；子程序與 Python 同一 process group，終端機 Ctrl+C 同時送達兩者。Python 關閉 client 後等待子程序結束才退出，不先終止 Rust（Rust 需完成辨識佇列並關閉 llama-server）。執行檔不存在或啟動失敗時記錄警告並只跑文字功能；`--no-voice` 不啟動子程序。Rust 意外結束時記錄 exit code，文字功能不受影響。
+- **啟動器**：`__main__` 在 Discord client 啟動前，以子程序在 `voice/` 工作目錄啟動 Rust release 執行檔；子程序與 Python 同一 process group，終端機 Ctrl+C 同時送達兩者。Python 關閉 client 後等待子程序結束才退出，不先終止 Rust（Rust 需完成辨識佇列並關閉 llama-server）。執行檔不存在或啟動失敗時記錄警告並只跑文字功能；`--no-voice` 不啟動子程序。Rust 以非 0 結束且非 Python 要求停止時記錄 warning（`voice_exited_unexpectedly`），文字功能不受影響。等待期間再按 Ctrl+C 只提示稍候，不強制結束 Rust；需強制時由使用者另行 kill。
+- **環境變數**：子程序環境沿用 `os.environ`，但 `WITHHELD` 內的變數（目前為 `SHARED_LLM_API_KEY`）以空值傳入；空值同時阻止 Rust 的 dotenvy 從根目錄 `.env` 補回真值。這是黑名單：日後在 `.env` 新增語音程式不需要的機密時，必須一併加入 `WITHHELD`。
 - **`/help`**：加入 `/join`、`/leave`、`/voicesummary` 的使用位置、TXT 公開、錄音告知與語音程式需在執行。
 
 ### 11.3 執行環境

@@ -27,7 +27,16 @@ HELP = (
     "兩者都填取時段內最新最多 limit 則；只填 hours 超過 500 則請縮短時間。\n"
     "topic 可指定關注主題；圖片、附件只提供佔位符，不讀取內容或外部頁面。\n"
     "先套用本機機密規則，再把對話、暱稱與 topic 送到 Groq；規則不保證涵蓋全部機密。\n"
-    "單批容量不足時請縮小範圍；每人同時一筆，不自動重試；尚未實作每日計次。"
+    "單批容量不足時請縮小範圍；每人同時一筆，不自動重試；尚未實作每日計次。\n"
+    "\n語音逐字稿（需語音程式同時執行，否則 /join、/leave 會顯示未回應）：\n"
+    "在伺服器先加入語音頻道再下 /join 開始錄音；在同一語音頻道下 /leave 停止。\n"
+    "逐字稿 TXT 會公開貼在下指令的頻道，並保存在本機；錄音前請先告知參與者。\n"
+    "/voicesummary 摘要逐字稿（尚未提供）。"
+)
+# Mirrors the Rust voice program's registration in voice/src/main.rs.
+VOICE_COMMANDS = (
+    ("join", "加入你所在的語音頻道並開始錄音"),
+    ("leave", "停止錄音並離開語音頻道"),
 )
 
 
@@ -74,6 +83,20 @@ async def send_summary(user: discord.User, text: str) -> None:
         closing(discord.File(buffer, filename="summary.txt")) as file,
     ):
         await user.send(embed=discord.Embed(title="頻道摘要", description=preview), file=file)
+
+
+def _voice_command(name: str, description: str) -> app_commands.Command:
+    # The Rust voice program answers these on the same bot token. Declaring them keeps
+    # tree.sync (a full overwrite) from deleting them; replying here would steal the
+    # interaction, which accepts only one response.
+    async def leave_to_voice_program(interaction: discord.Interaction) -> None:
+        pass
+
+    command = app_commands.Command(
+        name=name, description=description, callback=leave_to_voice_program
+    )
+    command = app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)(command)
+    return app_commands.allowed_installs(guilds=True, users=False)(command)
 
 
 class PersonalAgent(discord.Client):
@@ -176,6 +199,9 @@ class PersonalAgent(discord.Client):
                 )
             finally:
                 self.active_users.discard(user_id)
+
+        for name, description in VOICE_COMMANDS:
+            self.tree.add_command(_voice_command(name, description))
 
     async def setup_hook(self) -> None:
         commands = await self.tree.sync()

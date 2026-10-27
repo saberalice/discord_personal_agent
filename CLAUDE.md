@@ -4,7 +4,7 @@
 
 ## 1. 專案狀態與文件入口
 
-第一版是 Discord 時間範圍文字摘要，後續才做語音。2026-09-11 已依使用者決定採用 LangChain 並更新研究／設計文件；切片 A 已完成基本實機驗證；B 單批 LangChain／Groq 摘要已實作，2026-10-27 Owen 已在 Discord 頻道完成實機驗證；尚未部署常駐服務。2026-10-27 起以個人使用為主，多人功能延後；第二階段語音規格已確認，採 Python＋Rust 語音程式同一 Token 雙程式方案。
+第一版是 Discord 時間範圍文字摘要，後續才做語音。2026-09-11 已依使用者決定採用 LangChain 並更新研究／設計文件；切片 A 已完成基本實機驗證；B 單批 LangChain／Groq 摘要已實作，2026-10-27 Owen 已在 Discord 頻道完成實機驗證；尚未部署常駐服務。2026-10-27 起以個人使用為主，多人功能延後；第二階段語音規格已確認，採 Python＋Rust 語音程式同一 Token 雙程式方案，2026-10-28 語音整合（票 09）已完成實機驗收。
 
 - 開發前讀 [功能規格](docs/spec.md)、[技術設計](docs/design.md) 及 [實作與驗證計畫](docs/implementation.md)。
 - 比較或更換 LLM 串接方式時讀 [API 研究](docs/research/llm-integration.md)；涉及供應商額度、Discord 限制或授權時讀 [平台研究](docs/research/platform-constraints.md)。
@@ -105,7 +105,7 @@
 
 ## 6. 常用指令
 
-啟用 `discord-personal-agent` Conda 環境後，在專案根目錄執行 `python -m pytest -q`、`ruff check src tests`、`ruff format --check src tests`。離線設定檢查為 `python -m discord_personal_agent --check-config`，啟動為 `python -m discord_personal_agent`；安裝與實機驗收見 [本地開發](docs/local-development.md)。
+啟用 `discord-personal-agent` Conda 環境後，在專案根目錄執行 `python -m pytest -q`、`ruff check src tests`、`ruff format --check src tests`。離線設定檢查為 `python -m discord_personal_agent --check-config`，啟動為 `python -m discord_personal_agent`；安裝與實機驗收見 [本地開發](docs/local-development.md)。語音程式在 `voice/` 執行 `cargo test --release --locked`、`cargo clippy --release --locked -- -D warnings`；`python -m discord_personal_agent --no-voice` 只啟動文字功能；建置、啟動與資料清理見 [語音逐字稿](docs/voice-transcript.md)。
 
 ## 7. 設定與憑證
 
@@ -113,4 +113,4 @@
 
 ## Agent skills
 
-本機規格／工作票的位置與狀態見 [issue-tracker.md](docs/agents/issue-tracker.md)、[triage-labels.md](docs/agents/triage-labels.md)；詞彙與文件規則見 [domain.md](docs/agents/domain.md)。最近完成的工作票為 [單批摘要](docs/tasks/06-single-batch-summary.md)（已實機驗證），Pipeline 見 [單批摘要指南](docs/single-batch-summary.md)。本機機密規則見 [規則指南](docs/privacy-rules.md)。下一步依序為 [09 語音整合](docs/tasks/09-voice-integration.md)、[10 分批合併](docs/tasks/10-batch-merge.md)、[11 逐字稿摘要](docs/tasks/11-voice-summary.md)；一般附件仍暫緩。
+本機規格／工作票的位置與狀態見 [issue-tracker.md](docs/agents/issue-tracker.md)、[triage-labels.md](docs/agents/triage-labels.md)；詞彙與文件規則見 [domain.md](docs/agents/domain.md)。最近完成的工作票為 [單批摘要](docs/tasks/06-single-batch-summary.md)（已實機驗證），Pipeline 見 [單批摘要指南](docs/single-batch-summary.md)。本機機密規則見 [規則指南](docs/privacy-rules.md)。[09 語音整合](docs/tasks/09-voice-integration.md) 已完成；下一步依序為 [10 分批合併](docs/tasks/10-batch-merge.md)、[11 逐字稿摘要](docs/tasks/11-voice-summary.md)；一般附件仍暫緩。

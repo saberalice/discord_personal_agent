@@ -1,0 +1,26 @@
+{
+  "repo": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+  "revision": "36a678687ba7d07a74ca70ccb0e36902e005fb80",
+  "files": [
+    {
+      "rfilename": "Qwen3-ASR-1.7B-bf16.gguf",
+      "blobId": "b14f43f97c6d998e0316b13ac18470e12e816844",
+      "size": 4069674944,
+      "lfs": {
+        "sha256": "1af18763dfafde2bbf071ef8a0952f7bee66f140c3565e5ccc5afb07dc1f9227",
+        "size": 4069674944,
+        "pointerSize": 135
+      }
+    },
+    {
+      "rfilename": "mmproj-Qwen3-ASR-1.7B-bf16.gguf",
+      "blobId": "22f2771ff540f1bc94ba64ec597407e72aa9435a",
+      "size": 641773984,
+      "lfs": {
+        "sha256": "8882e9ddab3186f9aa71b1417c847177913e1466655ac944cf86e9b846735d62",
+        "size": 641773984,
+        "pointerSize": 134
+      }
+    }
+  ]
+}

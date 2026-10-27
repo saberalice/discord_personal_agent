@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 
 from .bot import PersonalAgent
 from .config import load_settings
+from .voice_process import VoiceProcess
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Discord personal agent — slice A")
     parser.add_argument("--check-config", action="store_true", help="檢查設定，不連線")
+    parser.add_argument("--no-voice", action="store_true", help="只啟動文字功能，不啟動語音程式")
     args = parser.parse_args()
     load_dotenv(Path.cwd() / ".env", override=False)
     try:
@@ -32,6 +34,7 @@ def main() -> None:
     if not token:
         parser.exit(1, "請在本地 .env 或環境變數設定 DISCORD_BOT_TOKEN。\n")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    voice = None if args.no_voice else VoiceProcess.start(Path.cwd() / "voice")
     try:
         PersonalAgent(settings, api_key=os.environ.get("SHARED_LLM_API_KEY", "").strip()).run(
             token, log_handler=None
@@ -42,6 +45,9 @@ def main() -> None:
         parser.exit(1, "請在 Developer Portal 啟用 Message Content Intent 後重新啟動。\n")
     except (discord.HTTPException, OSError) as exc:
         parser.exit(1, f"Discord 啟動失敗（{type(exc).__name__}），請確認網路及應用程式設定。\n")
+    finally:
+        if voice is not None:
+            voice.stop()
 
 
 if __name__ == "__main__":

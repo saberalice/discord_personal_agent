@@ -16,7 +16,7 @@ def test_command_registration_is_dm_only_with_bounded_hours():
     commands = {
         command.name: command.to_dict(client.tree) for command in client.tree.get_commands()
     }
-    assert set(commands) == {"summary", "help"}
+    assert set(commands) == {"summary", "help", "join", "leave"}
     summary = commands["summary"]
     assert summary["contexts"] == [1]
     assert summary["integration_types"] == [0]
@@ -231,3 +231,36 @@ async def test_inspection_logs_reason_without_echoing_input(link, reason, caplog
         assert "channel_id=333" in caplog.text
     interaction.user.send.assert_not_awaited()
     assert not client.active_users
+
+
+def test_voice_commands_mirror_the_rust_voice_program():
+    import re
+    from pathlib import Path
+
+    rust = (Path(__file__).parents[1] / "voice/src/main.rs").read_text(encoding="utf-8")
+    expected = dict(re.findall(r'\("(join|leave)", "([^"]+)"\)', rust))
+    assert set(expected) == {"join", "leave"}
+    assert "InteractionContext::Guild]" in rust
+    client = PersonalAgent(Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}))
+    for name, description in expected.items():
+        command = client.tree.get_command(name).to_dict(client.tree)
+        assert command["description"] == description
+        assert command["contexts"] == [0]
+        assert command["integration_types"] == [0]
+
+
+@pytest.mark.parametrize("name", ["join", "leave"])
+async def test_voice_commands_leave_the_interaction_to_the_voice_program(name):
+    client = PersonalAgent(Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}))
+    interaction = AsyncMock(spec=discord.Interaction)
+    interaction.response = AsyncMock(spec=discord.InteractionResponse)
+    await client.tree.get_command(name).callback(interaction)
+    assert interaction.response.method_calls == []
+    assert interaction.method_calls == []
+
+
+def test_help_explains_voice_usage():
+    from discord_personal_agent.bot import HELP
+
+    for text in ("/join", "/leave", "/voicesummary", "語音程式"):
+        assert text in HELP

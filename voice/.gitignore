@@ -1,0 +1,8 @@
+/target/
+/data/
+/models/
+.env
+.DS_Store
+/.venv/
+__pycache__/
+/vendor/

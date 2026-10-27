@@ -1,0 +1,1 @@
+請閱讀附件 repository 的 AGENT_HANDOFF.md 與目標 repository 的開發規則，將此 Discord 語音逐字稿功能合併到我指定的既有 bot。維持最小實作，沿用既有 client、Songbird manager、指令 router 與 shutdown 流程；避免覆蓋既有 join/leave、資料表及設定。保留 Qwen3-ASR 1.7B BF16 GGUF + llama.cpp、Silero、音量標準化、臺灣時間及繁體 TXT，停止後回傳文字附件並清除暫存音檔。完成必要測試，說明修改檔案、啟動設定與尚未驗證的事項。先確認目標專案路徑；本附件是功能來源，不是要求啟動另一個獨立 bot。
