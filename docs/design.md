@@ -2,6 +2,8 @@
 
 目前已實作的單批摘要設計與程式對照見 [單批摘要](single-batch-summary.md)。工作票 06 使用 Groq gpt-oss-20b，4000 輸入／4000 輸出、無重試；下列分批、計次、BYOK 為後續完整設計。
 
+2026-10-27：專案改以個人使用為主，第 6、7 節的計次、排隊、取消與個人授權暫不實作（見規格第 11 節）。分批合併見第 4 節與第 12 節，第二階段語音整合見第 11 節。
+
 更新：2026-09-11，依使用者決定第一版採用 LangChain。
 
 本文件描述第一版的工程方案，產品需求以 [spec.md](spec.md) 為準。**這是設計，不是已完成的程式或量測結果。** 未在訪談中指定的數字與政策標為「工程預設」，實作時依驗證修正。
@@ -191,3 +193,65 @@ QUEUED → PREPARING → GENERATING → DELIVERING → SUCCEEDED
 ## 10. 尚待實作驗證
 
 來源文件查證不等於整合已通過：尤其是免費端點與資料政策是否相容、OpenRouter headless 新帳戶授權、schema 能力、Groq TPM、成員暱稱／權限 API、長排隊 DM 交付及個人 Key 的隔離。驗證順序見 [implementation.md](implementation.md)；在完成前保留「候選」，不宣稱任何模型品質或容量已確定。
+
+## 11. 語音整合（雙程式）
+
+產品行為見規格第 9 節。Rust 語音程式原樣放在 `voice/`（Cargo 專案結構不變；`models/`、`vendor/`、`target/`、`data/` 不進 Git），錄音／VAD／ASR／匯出模組不改。
+
+### 11.1 Rust 允許的改動
+
+只做兩項：
+
+1. `main.rs` 的 `tracing::info!(id, %text, "Transcribed")` 改為只記錄 id 與字數。
+2. Token 環境變數由 `DISCORD_TOKEN` 改讀 `DISCORD_BOT_TOKEN`。dotenvy 會由工作目錄往上層搜尋 `.env` 且不覆蓋既有環境變數，因此在 `voice/` 執行時可讀到專案根目錄的 `.env`。[dotenvy](https://docs.rs/dotenvy/0.15.7/dotenvy/fn.dotenv.html)
+
+### 11.2 Python 端
+
+- **指令宣告**：discord.py `tree.sync()` 以 PUT 整份覆寫 global 指令。Python 在 CommandTree 宣告 `/join`、`/leave`，名稱、描述與 guild-only context 與 Rust 一致，callback 不回應；如此 sync 不會刪除 Rust 指令，也不會觸發 `CommandNotFound` 進入 `command_error` 搶先回應。以測試檢查兩邊名稱與 context 一致。
+- **啟動器**：`__main__` 在 Discord client 啟動前，以子程序在 `voice/` 工作目錄啟動 Rust release 執行檔；子程序與 Python 同一 process group，終端機 Ctrl+C 同時送達兩者。Python 關閉 client 後等待子程序結束才退出，不先終止 Rust（Rust 需完成辨識佇列並關閉 llama-server）。執行檔不存在或啟動失敗時記錄警告並只跑文字功能；`--no-voice` 不啟動子程序。Rust 意外結束時記錄 exit code，文字功能不受影響。
+- **`/help`**：加入 `/join`、`/leave`、`/voicesummary` 的使用位置、TXT 公開、錄音告知與語音程式需在執行。
+
+### 11.3 執行環境
+
+本機 WSL，NVIDIA RTX 3080（10 GB），已有 CUDA 12.9 `nvcc`、gcc／g++、make、curl、python3.12。需補：rustup 安裝 Rust（使用者目錄），`sudo apt install cmake`（Owen 執行）。建置：`python3 scripts/build-engine.py --backend cuda`、`python3 scripts/download-qwen.py`（約 4.7 GB）、`cargo build --release --locked`、`cargo test --release --locked`。來源只在 Mac M4（Metal）驗證，Linux／CUDA 建置為本專案首次。
+
+### 11.4 本機資料與清理
+
+`DATA_DIR` 預設為工作目錄下的 `data`，即 `voice/data/`：
+
+| 檔案 | 內容 |
+|---|---|
+| `log.sqlite3`、`-wal`、`-shm` | sessions、session_clocks、users（ID 與暱稱）、utterances（逐字稿文字、時間、狀態） |
+| `<session_id>/yyyy-mm-dd_hh-mm-ss.txt` | 該場 TXT，內容與上傳者相同 |
+| `<session_id>/<user_id>-<序號>.wav` | 暫存音檔，辨識完成或失敗後刪除 |
+
+清理前先 Ctrl+C 停止 bot 並等待結束。全部清除：`rm -rf voice/data`（Rust 啟動時會重建目錄與資料表）。刪除單一場次：
+
+```bash
+S=<session_id>
+sqlite3 voice/data/log.sqlite3 "
+DELETE FROM utterances     WHERE session_id='$S';
+DELETE FROM users          WHERE session_id='$S';
+DELETE FROM session_clocks WHERE session_id='$S';
+DELETE FROM sessions       WHERE id='$S';
+VACUUM;"
+rm -rf "voice/data/$S"
+```
+
+`VACUUM` 重寫資料庫以移除已刪除資料殘留的頁面；`rm` 不保證儲存媒體層級抹除。
+
+## 12. 逐字稿摘要與分批
+
+### 12.1 `/voicesummary`
+
+- 解析訊息連結取得 guild／channel／message ID；沿用允許清單與雙方權限檢查，再 fetch 該訊息。
+- 驗證作者為本 bot、附件檔名符合 `yyyy-mm-dd_hh-mm-ss.txt`、大小不超過 8 MiB 才下載；這是「附件只用佔位符」的有限例外，不下載其他附件。
+- 解析每行 `[hh:mm:ss] 名稱: 內容`；以檔名日期為起點，行時間小於前一行時視為跨午夜加一日。無法解析的行使整次失敗，不默默略過。
+- 每行給短來源 ID（如 `t001`），名稱與內容經 PrivacyGuard 處理後進入與 `/summary` 相同的摘要流程；段落時間由來源行產生，連結指向該 TXT 訊息。
+
+### 12.2 分批合併
+
+- 依時間順序把來源切成不超過輸入預算的批次，每批走 ChunkSummary，再以 MergeTimeline 合併；合併輸入仍超過預算時分層合併。
+- 429：依 `retry-after` 等待，同一批最多重送 1 次並通知使用者正在等待；其他錯誤沿用單批的明確失敗。
+- 每任務最多 12 次模型呼叫、600 秒總期限；超過即失敗、不交付部分結果。
+- Groq 官方 rate limit 頁目前把 30 RPM／1K RPD／8K TPM／200K TPD 標為 Developer plan 基本限額，免費方案實際值以帳戶 Limits 頁為準；文件未說明 max_tokens 是否計入 TPM，須實測。[Rate Limits](https://console.groq.com/docs/rate-limits)

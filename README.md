@@ -8,6 +8,8 @@
 
 新增 [對話整理預覽](docs/conversation-preview.md)：執行 `python -m discord_personal_agent.preview --demo` 可查看虛構對話與來源 JSON。
 
+第二階段（2026-10-27 規格確認）：同一 bot 身分加入 Rust 語音逐字稿程式，並新增 `/voicesummary`；見 [規格第 9、10 節](docs/spec.md#9-第二階段語音逐字稿)。專案目前以個人使用為主。
+
 架構決定（2026-09-11）：第一版採用 LangChain 模型整合與 Runnable 流程，將個人金鑰、額度和外送政策集中於 LlmGateway。
 
 ## 建議閱讀順序

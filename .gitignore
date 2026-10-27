@@ -14,3 +14,4 @@ dist/
 build/
 local-exports/
 discord-asr-integration-*.zip
+asr-extract/

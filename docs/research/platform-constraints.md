@@ -6,13 +6,13 @@
 
 Groq 適合列為共用供應商的先行測試候選；不能僅憑每日請求數認定為最佳選擇。
 
-| Groq 模型 ID | 官方狀態 | 上下文 tokens | 免費限額：RPM / RPD / TPM / TPD |
+| Groq 模型 ID | 官方狀態 | 上下文 tokens | 官方表列限額：RPM / RPD / TPM / TPD |
 |---|---|---:|---|
 | `openai/gpt-oss-20b` | Production | 131,072 | 30 / 1,000 / 8,000 / 200,000 |
 | `openai/gpt-oss-120b` | Production | 131,072 | 30 / 1,000 / 8,000 / 200,000 |
 | `qwen/qwen3.6-27b` | Preview | 131,072 | 30 / 1,000 / 8,000 / 200,000 |
 
-模型狀態與上下文取自 [Groq Models](https://console.groq.com/docs/models)；免費方案限額取自 [Rate Limits](https://console.groq.com/docs/rate-limits)，不要誤用模型頁的 Developer Plan 數字。Groq 也列有 `qwen/qwen3.8-27b`，目前同屬 Preview；不擴大第一輪測試名單。Preview 可能短期下架。繁體中文品質、時間定位與格式穩定性尚未實測，表格不是品質排名。
+模型狀態與上下文取自 [Groq Models](https://console.groq.com/docs/models)；限額取自 [Rate Limits](https://console.groq.com/docs/rate-limits)。**2026-10-27 更正：該頁目前把這組數字標為 Developer plan 基本限額，免費方案實際值以帳戶 Limits 頁為準。**Groq 也列有 `qwen/qwen3.8-27b`，目前同屬 Preview；不擴大第一輪測試名單。Preview 可能短期下架。繁體中文品質、時間定位與格式穩定性尚未實測，表格不是品質排名。
 
 Groq 限額以 organization 計算，先碰到任一門檻就受限。131k 上下文不表示免費方案能一次送入 131k tokens；分批要同時考慮 TPM、預留輸出與多使用者共用。使用回應的剩餘額度／重置標頭與 429 的 `retry-after`，避免只限制並行數。[Groq Rate Limits](https://console.groq.com/docs/rate-limits)
 
@@ -55,3 +55,12 @@ Groq 預設推論不保存全文，但可靠性／濫用調查可能保存至多
 以上支持第一版使用 discord.py 的基本 View／Embed／檔案，不需要 Components V2。取消按鈕的 view 存活時間必須涵蓋任務期限；不能依賴 SDK 預設逾時。每次外送及交付前重新查核目標頻道權限，避免排隊期間權限改變；這是本專案的存取控制設計。
 
 尚未驗證的必要整合點：global DM 指令實機可見、歷史文字與附件可讀、請求者權限正確、沒有成員快取時暱稱取得、超過 15 分鐘後仍可普通 DM 交付、取消競態、Embed／TXT 完整呈現。第二階段語音接收能力需另做研究，不能從 discord.py 能加入語音頻道推論已能錄音。
+
+## 5. 第二階段語音：同一 Token 雙程式（2026-10-27）
+
+語音逐字稿功能來源為 Rust（Serenity／Songbird＋Silero＋Qwen3-ASR／llama.cpp）快照，Owen 決定不改其實作、沿用本 bot 身分，因此 Python 程式與 Rust 程式以同一 Token 各自開 Gateway 連線。
+
+- 官方允許：Gateway 文件寫明 "You can establish multiple sessions with the same `[shard_id, num_shards]`"，但未說明 INTERACTION_CREATE 會送到哪些 session。[Gateway](https://docs.discord.com/developers/events/gateway#sharding)
+- 本地實測（Owen 執行，2026-10-27）：同一 Token 兩條連線，私訊 `/help` 與伺服器暫時指令各約 10 次，每個 interaction id 兩邊都收到；正常 bot 加一條只記錄的連線時，`/help` 正常回覆且另一條同樣收到。此為單次實測，Discord 未以文件保證，行為改變時需重測。
+- 必須調整 Python 端：discord.py `tree.sync()` 以 PUT 整份覆寫 global 指令，會刪除 Rust 註冊的 `/join`、`/leave`；未知指令經 `CommandNotFound` 進入本專案 `command_error` 會搶先回應。Rust 端以 create_global_command 新增，且只處理自己的指令名稱。
+- 未採用 Python 改寫：discord.py 2.7.1 無公開語音接收 API；`discord-ext-voice-recv` 最新版 0.5.2a179（2025-06-18）未支援 DAVE 收音，相關 PR 截至 2026-10 未見合併。Discord 自 2026-03-01 起只支援 E2EE 通話。[Voice Connections](https://docs.discord.com/developers/topics/voice-connections)、[voice-recv](https://pypi.org/project/discord-ext-voice-recv/)
