@@ -1,0 +1,8 @@
+# Conda supplies Python and uv; uv installs the exact packages from uv.lock (scripts/setup.sh).
+name: discord-personal-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - uv=0.11.18

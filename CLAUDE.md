@@ -113,4 +113,4 @@
 
 ## Agent skills
 
-本機規格／工作票的位置與狀態見 [issue-tracker.md](docs/agents/issue-tracker.md)、[triage-labels.md](docs/agents/triage-labels.md)；詞彙與文件規則見 [domain.md](docs/agents/domain.md)。最近完成的工作票為 [單批摘要](docs/tasks/06-single-batch-summary.md)（已實機驗證），Pipeline 見 [單批摘要指南](docs/single-batch-summary.md)。本機機密規則見 [規則指南](docs/privacy-rules.md)。[09 語音整合](docs/tasks/09-voice-integration.md) 已完成；下一步依序為 [10 分批合併](docs/tasks/10-batch-merge.md)、[11 逐字稿摘要](docs/tasks/11-voice-summary.md)；一般附件仍暫緩。
+本機規格／工作票的位置與狀態見 [issue-tracker.md](docs/agents/issue-tracker.md)、[triage-labels.md](docs/agents/triage-labels.md)；詞彙與文件規則見 [domain.md](docs/agents/domain.md)。最近完成的工作票為 [單批摘要](docs/tasks/06-single-batch-summary.md)（已實機驗證），Pipeline 見 [單批摘要指南](docs/single-batch-summary.md)。本機機密規則見 [規則指南](docs/privacy-rules.md)。[09 語音整合](docs/tasks/09-voice-integration.md)、[11 逐字稿摘要](docs/tasks/11-voice-summary.md) 已完成實機驗收；[10 分批合併](docs/tasks/10-batch-merge.md) 程式完成，多批合併尚待實機驗收（遇 Groq TPM 429 的處理待決定）；一般附件仍暫緩。新機器安裝見 README 與 `scripts/setup.sh`。

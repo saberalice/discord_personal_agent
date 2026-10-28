@@ -25,5 +25,5 @@ timezone = "Asia/Taipei"
 
 # Groq 單批摘要的本機容量設定；不會增加供應商額度。
 [llm]
-max_input_tokens = 4000
+max_input_tokens = 6000
 max_output_tokens = 4000
