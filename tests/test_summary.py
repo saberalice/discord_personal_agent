@@ -143,7 +143,7 @@ def test_render_uses_source_times_links_and_masks_model_output():
     query = Query.create(
         "https://discord.com/channels/111/222", received_at=datetime(2026, 9, 11, 8, tzinfo=UTC)
     )
-    text = render_summary(result, request, query, ZoneInfo("Asia/Taipei"), PrivacyGuard())
+    text = render_summary(result, request.sources, query, ZoneInfo("Asia/Taipei"), PrivacyGuard())
     assert "2026-09-11 15:03" in text
     assert "https://discord.com/channels/111/222/123456789" in text
     assert "alice@example.com" not in text
@@ -173,7 +173,7 @@ def test_segment_displays_only_earliest_source_link_and_retains_end_time():
     query = Query.create(
         "https://discord.com/channels/111/222", received_at=datetime(2026, 9, 12, 2, tzinfo=UTC)
     )
-    text = render_summary(result, request, query, ZoneInfo("Asia/Taipei"), PrivacyGuard())
+    text = render_summary(result, request.sources, query, ZoneInfo("Asia/Taipei"), PrivacyGuard())
     assert "2026-09-11 15:03 ～ 2026-09-12 09:20" in text
     assert text.count("https://discord.com/channels/111/222/123456789") == 1
     assert "https://discord.com/channels/111/222/999" not in text

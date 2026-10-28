@@ -215,3 +215,77 @@ async def test_prepare_reads_content_and_resolves_current_nickname_once(setup, d
     assert [m.content for m in result.messages] == ["正文全文", "正文全文"]
     assert {m.display_name for m in result.messages} == {"全域名稱" if departed else "現在的暱稱"}
     assert sum(call.args == (111, 456) for call in client.http.get_member.await_args_list) == 1
+
+
+def voice_channel(channel_type):
+    extra = {"bitrate": 64000, "user_limit": 0, "rtc_region": None} if channel_type == 2 else {}
+    return {"type": channel_type, **extra}
+
+
+def transcript_message(author_id=999, filename="2026-09-11_10-00-00.txt", size=20):
+    return {
+        "id": "333",
+        "channel_id": "222",
+        "author": {"id": str(author_id), "username": "bot", "discriminator": "0", "avatar": None},
+        "content": "本場語音紀錄已完成，請下載文字檔。",
+        "timestamp": "2026-09-11T02:00:00+00:00",
+        "edited_timestamp": None,
+        "tts": False,
+        "mention_everyone": False,
+        "mentions": [],
+        "mention_roles": [],
+        "attachments": [
+            {
+                "id": "444",
+                "filename": filename,
+                "size": size,
+                "url": "https://cdn.discordapp.com/attachments/222/444/file.txt",
+                "proxy_url": "https://media.discordapp.net/attachments/222/444/file.txt",
+            }
+        ],
+        "embeds": [],
+        "pinned": False,
+        "type": 0,
+    }
+
+
+@pytest.mark.parametrize("channel_type", [0, 2])
+async def test_transcript_is_read_from_the_bots_own_attachment(setup, channel_type):
+    client, query = setup
+    client.http.get_channel.return_value.update(voice_channel(channel_type))
+    client.http.get_message = AsyncMock(return_value=transcript_message())
+    client.http.get_from_cdn = AsyncMock(return_value=b"[10:00:01] A: ok\n")
+    history = DiscordHistory(client, 999)
+    await history.authorize(query, 123, voice_text=True)
+    file = await history.transcript(333)
+    assert (file.filename, file.data) == ("2026-09-11_10-00-00.txt", b"[10:00:01] A: ok\n")
+    client.http.get_message.assert_awaited_once_with(222, 333)
+
+
+async def test_voice_channel_is_still_rejected_for_channel_summaries(setup):
+    client, query = setup
+    client.http.get_channel.return_value.update(voice_channel(2))
+    with pytest.raises(InspectionError) as failure:
+        await DiscordHistory(client, 999).authorize(query, 123)
+    assert failure.value.code.value == "unsupported_channel_type"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        transcript_message(author_id=555),
+        transcript_message(filename="notes.txt"),
+        transcript_message(size=8 * 1024 * 1024 + 1),
+    ],
+    ids=["other-author", "other-file", "too-large"],
+)
+async def test_other_messages_are_refused_without_downloading(setup, message):
+    client, query = setup
+    client.http.get_message = AsyncMock(return_value=message)
+    client.http.get_from_cdn = AsyncMock()
+    history = DiscordHistory(client, 999)
+    await history.authorize(query, 123, voice_text=True)
+    with pytest.raises(InspectionError) as failure:
+        await history.transcript(333)
+    assert failure.value.code.value == "invalid_transcript"
+    client.http.get_from_cdn.assert_not_awaited()

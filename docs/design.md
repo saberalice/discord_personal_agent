@@ -1,6 +1,6 @@
 # 技術設計
 
-目前已實作的單批摘要設計與程式對照見 [單批摘要](single-batch-summary.md)。工作票 06 使用 Groq gpt-oss-20b，4000 輸入／4000 輸出、無重試；下列分批、計次、BYOK 為後續完整設計。
+目前已實作的單批摘要設計與程式對照見 [單批摘要](single-batch-summary.md)；工作票 10 起內容超過單批時改由 `summary_workflow.py` 分批合併（第 12.2 節）。計次、BYOK 為後續完整設計。
 
 2026-10-27：專案改以個人使用為主，第 6、7 節的計次、排隊、取消與個人授權暫不實作（見規格第 11 節）。分批合併見第 4 節與第 12 節，第二階段語音整合見第 11 節。
 
@@ -152,7 +152,7 @@ QUEUED → PREPARING → GENERATING → DELIVERING → SUCCEEDED
 
 ## 8. 設定契約與部署
 
-目前已實作 TOML 的 `timezone`、`allowed_channels`、`privacy_rules` 與 `[llm] max_input_tokens/max_output_tokens`，以及 `DISCORD_BOT_TOKEN`／`BOT_CONFIG_PATH`／`SHARED_LLM_API_KEY`。目前 hours 選填、上限 24；limit 選填、上限 500，省略兩者則取最新最多 500 則（组合規則見規格），查詢與投遞期限各為 60 秒，模型階段為 90 秒；其他下列設定仍為後續完整版本契約，尚未接受於設定檔。無效設定啟動即失敗，保留清楚且不含機密的錯誤。
+目前已實作 TOML 的 `timezone`、`allowed_channels`、`privacy_rules` 與 `[llm] max_input_tokens/max_output_tokens`，以及 `DISCORD_BOT_TOKEN`／`BOT_CONFIG_PATH`／`SHARED_LLM_API_KEY`。目前 hours 選填、上限 24；limit 選填、上限 500，省略兩者則取最新最多 500 則（组合規則見規格），查詢與投遞期限各為 60 秒，每次模型請求 90 秒，整個任務 600 秒、最多 12 次模型呼叫（`summary_workflow.py` 常數，實測後再調整）；其他下列設定仍為後續完整版本契約，尚未接受於設定檔。無效設定啟動即失敗，保留清楚且不含機密的錯誤。
 
 | 設定 | 初始值／行為 |
 |---|---|
@@ -245,10 +245,10 @@ rm -rf "voice/data/$S"
 
 ### 12.1 `/voicesummary`
 
-- 解析訊息連結取得 guild／channel／message ID；沿用允許清單與雙方權限檢查，再 fetch 該訊息。
+- 解析訊息連結取得 guild／channel／message ID；沿用允許清單與雙方權限檢查（`authorize(..., voice_text=True)` 另接受語音頻道內建文字聊天，因為語音程式把 TXT 貼在下 `/join` 的頻道），再 fetch 該訊息。
 - 驗證作者為本 bot、附件檔名符合 `yyyy-mm-dd_hh-mm-ss.txt`、大小不超過 8 MiB 才下載；這是「附件只用佔位符」的有限例外，不下載其他附件。
 - 解析每行 `[hh:mm:ss] 名稱: 內容`；以檔名日期為起點，行時間小於前一行時視為跨午夜加一日。無法解析的行使整次失敗，不默默略過。
-- 每行給短來源 ID（如 `t001`），名稱與內容經 PrivacyGuard 處理後進入與 `/summary` 相同的摘要流程；段落時間由來源行產生，連結指向該 TXT 訊息。
+- 每行給短來源 ID（與 `/summary` 相同的 `m001` 編號），名稱與內容經 PrivacyGuard 處理後進入與 `/summary` 相同的摘要流程；段落時間由來源行產生；各段不附連結，結尾附一次該 TXT 訊息連結。
 
 ### 12.2 分批合併
 
@@ -256,3 +256,18 @@ rm -rf "voice/data/$S"
 - 429：依 `retry-after` 等待，同一批最多重送 1 次並通知使用者正在等待；其他錯誤沿用單批的明確失敗。
 - 每任務最多 12 次模型呼叫、600 秒總期限；超過即失敗、不交付部分結果。
 - Groq 官方 rate limit 頁目前把 30 RPM／1K RPD／8K TPM／200K TPD 標為 Developer plan 基本限額，免費方案實際值以帳戶 Limits 頁為準；文件未說明 max_tokens 是否計入 TPM，須實測。[Rate Limits](https://console.groq.com/docs/rate-limits)
+
+### 12.3 實作對照（工作票 10）
+
+- `summary_workflow.py`：`SummaryWorkflow.summarize` 先把整批來源遮罩並統一編號（`m001`…），在送出任何請求前建立並以 `check_capacity` 量測所有批次；預估呼叫數（批數＋至少一次合併）超過 12 時零外送失敗。
+- 每批只把該批來源交給驗證，引用其他批次的 ID 會被拒絕。單則超量時依字元均分成多個 `part`，保留同一 source_id，附件佔位符只放在最後一段。
+- 合併請求只含各批段落的標題、摘要、source_ids 與程式計算的時間，不含原始訊息；段落文字先經 PrivacyGuard，block 時不送出合併。放不進一次合併時，相鄰部分先合併，逐層進行。
+- `groq_gateway.py` 把 429 轉成 `RateLimited(retry_after)`；workflow 在剩餘期限內等待一次並透過 `notify` 告知使用者。
+- 與第 2.1 節的差異：沿用工作票 06 的做法直接組 System／Human 訊息，未使用 `ChatPromptTemplate`；分批與合併共用同一個 gateway 與 structured output 鏈。
+
+### 12.4 實作對照（工作票 11）
+
+- `voice_transcript.py`：`TranscriptLink.parse` 只接受訊息連結；`parse_transcript` 以檔名日期（固定 UTC+8）為起點，行時間倒退即加一日；空白行略過，其餘任何無法解析的行（含 CRLF、非 UTF-8）整次失敗，錯誤只報行號、不回顯內容。每行成為一個 `SourceMessage`，`id` 皆為 TXT 訊息 ID，使摘要連結指向該訊息。
+- `discord_adapter.py`：`DiscordHistory.transcript` 驗證作者為本 bot、恰有一個符合檔名的附件且不超過 8 MiB 後才下載。
+- `SummaryService.run_transcript` 與 `/summary` 共用分批流程與交付；標頭改為發言時間；各段不附連結，結尾只附一次逐字稿 TXT 訊息連結。`bot.py` 兩個私訊指令共用 `_run_dm_job`。
+- 分批 Prompt 補一行「資料可能是語音辨識逐字稿、可能有同音錯字」。

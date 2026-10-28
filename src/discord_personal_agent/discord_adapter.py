@@ -9,6 +9,7 @@ import discord
 
 from .conversation import SourceMessage
 from .inspection import InspectionCode, InspectionError, Query
+from .voice_transcript import FILENAME, MAX_BYTES, TranscriptFile
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +41,19 @@ class DiscordHistory:
     def __init__(self, client: discord.Client, bot_id: int):
         self.client = client
         self.bot_id = bot_id
-        self.channel: discord.TextChannel | None = None
+        self.channel: discord.TextChannel | discord.VoiceChannel | None = None
 
-    async def authorize(self, query: Query, requester_id: int) -> None:
+    async def authorize(self, query: Query, requester_id: int, *, voice_text: bool = False) -> None:
         # Fetch roles, overwrites and both members afresh; no privileged member cache needed.
         with discord_operation("fetch_guild", "讀取伺服器"):
             guild = await self.client.fetch_guild(query.guild_id)
         with discord_operation("fetch_channel", "讀取頻道"):
             channel = await guild.fetch_channel(query.channel_id)
-        if not isinstance(channel, discord.TextChannel) or channel.type != discord.ChannelType.text:
+        text_channel = (
+            isinstance(channel, discord.TextChannel) and channel.type == discord.ChannelType.text
+        )
+        voice_chat = voice_text and isinstance(channel, discord.VoiceChannel)
+        if not (text_channel or voice_chat):
             raise InspectionError(
                 "目前只支援一般伺服器文字頻道，不支援討論串或其他頻道。",
                 code=InspectionCode.UNSUPPORTED_CHANNEL,
@@ -117,3 +122,26 @@ class DiscordHistory:
                     system,
                     message.reference.message_id if message.reference else None,
                 )
+
+    async def transcript(self, message_id: int) -> TranscriptFile:
+        """Download the voice program's TXT; nothing else in the channel is ever read."""
+        if self.channel is None:
+            raise RuntimeError("History must be authorized before reading")
+        with discord_operation("fetch_transcript", "讀取逐字稿訊息"):
+            message = await self.channel.fetch_message(message_id)
+        if message.author.id != self.bot_id:
+            raise InspectionError(
+                "只能摘要本 Bot 貼出的語音逐字稿。", code=InspectionCode.INVALID_TRANSCRIPT
+            )
+        files = [item for item in message.attachments if FILENAME.fullmatch(item.filename)]
+        if len(files) != 1:
+            raise InspectionError(
+                "這則訊息沒有語音逐字稿 TXT 附件。", code=InspectionCode.INVALID_TRANSCRIPT
+            )
+        if files[0].size > MAX_BYTES:
+            raise InspectionError(
+                "逐字稿超過 8 MiB 上限，未下載。", code=InspectionCode.INVALID_TRANSCRIPT
+            )
+        with discord_operation("download_transcript", "下載逐字稿"):
+            data = await files[0].read()
+        return TranscriptFile(files[0].filename, data)

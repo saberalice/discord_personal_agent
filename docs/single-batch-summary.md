@@ -31,7 +31,7 @@ python -m discord_personal_agent.llm_smoke
 python -m discord_personal_agent
 ```
 
-與 Bot 私訊 `/summary channel:<連結> limit:20`；先從少量訊息開始。`hours`、`limit`、`topic` 都選填，兩種範圍都不填仍取最新最多 500 則，但不保證這 500 則能放入單批 token 容量。重啟時會同步新的指令說明。
+與 Bot 私訊 `/summary channel:<連結> limit:20`；先從少量訊息開始。`hours`、`limit`、`topic` 都選填，兩種範圍都不填仍取最新最多 500 則，超過單批 token 容量時自動分批合併（[工作票 10](tasks/10-batch-merge.md)），超過 12 次模型呼叫或 600 秒才失敗。重啟時會同步新的指令說明。
 
 ## Pipeline 與檔案入口
 
@@ -95,6 +95,7 @@ max_output_tokens = 4000
 | `unsupported_channel_type` | 非一般文字頻道 |
 | `bot_permission_denied` / `requester_permission_denied` | 指定一方缺檢視或讀取歷史權限 |
 | `message_limit_exceeded` | 時段內超過 500 則且未設 limit |
+| `invalid_transcript` | `/voicesummary` 的訊息不是本 Bot 的逐字稿、檔名不符、超過 8 MiB 或內容無法解析 |
 | `privacy_check_failed` | 整理階段的機密檢查未通過（阻擋或檢查失敗） |
 | `discord_api_failed` | 查 stage、http_status、discord_code 定位 API 失敗 |
 | `bot_not_ready` | Bot 尚未就緒 |

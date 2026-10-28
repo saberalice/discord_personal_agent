@@ -59,7 +59,7 @@ async def run() -> None:
     )
     async with asyncio.timeout(90):
         result = await gateway.generate(request, api_key=key)
-    print(render_summary(result, request, query, settings.timezone, settings.privacy))
+    print(render_summary(result, request.sources, query, settings.timezone, settings.privacy))
     print("來源連結為虛構測試 ID，不是真實 Discord 對話。")
 
 

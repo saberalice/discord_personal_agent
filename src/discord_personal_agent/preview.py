@@ -21,7 +21,7 @@ from .inspection import InspectionError, Query, SummaryApplication
 
 
 class DemoHistory:
-    async def authorize(self, query: Query, requester_id: int) -> None:
+    async def authorize(self, query: Query, requester_id: int, *, voice_text=False) -> None:
         pass
 
     async def messages_newest_first(self, query: Query):

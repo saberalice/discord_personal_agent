@@ -25,6 +25,7 @@ class InspectionCode(StrEnum):
     MESSAGE_LIMIT = "message_limit_exceeded"
     PRIVACY_CHECK = "privacy_check_failed"
     DISCORD_API = "discord_api_failed"
+    INVALID_TRANSCRIPT = "invalid_transcript"
     BOT_NOT_READY = "bot_not_ready"
 
 
@@ -85,7 +86,10 @@ class Query:
 
 
 class ChannelHistory(Protocol):
-    async def authorize(self, query: Query, requester_id: int) -> None: ...
+    # voice_text also accepts a voice channel's built-in chat, where transcripts can be posted.
+    async def authorize(
+        self, query: Query, requester_id: int, *, voice_text: bool = False
+    ) -> None: ...
 
     def timestamps_newest_first(self, query: Query) -> AsyncIterator[datetime]: ...
 
@@ -113,7 +117,8 @@ class SummaryApplication:
         self.allowed_channels = allowed_channels
         self.privacy = privacy if privacy is not None else PrivacyGuard()
 
-    async def inspect(self, query: Query, *, requester_id: int) -> Inspection:
+    async def authorize(self, query: Query, *, requester_id: int, voice_text: bool = False) -> None:
+        """Allowlist first, so channels outside it are never touched on Discord."""
         if query.guild_id not in self.allowed_channels:
             raise InspectionError(
                 "此頻道不在管理員允許的測試範圍內。", code=InspectionCode.GUILD_NOT_ALLOWED
@@ -122,7 +127,10 @@ class SummaryApplication:
             raise InspectionError(
                 "此頻道不在管理員允許的測試範圍內。", code=InspectionCode.CHANNEL_NOT_ALLOWED
             )
-        await self.history.authorize(query, requester_id)
+        await self.history.authorize(query, requester_id, voice_text=voice_text)
+
+    async def inspect(self, query: Query, *, requester_id: int) -> Inspection:
+        await self.authorize(query, requester_id=requester_id)
         count = 0
         async for stamp in self.history.timestamps_newest_first(query):
             if query.start is not None and stamp < query.start:
@@ -136,15 +144,7 @@ class SummaryApplication:
         return Inspection(count)
 
     async def prepare(self, query: Query, *, requester_id: int, topic: str = "") -> Conversation:
-        if query.guild_id not in self.allowed_channels:
-            raise InspectionError(
-                "此頻道不在管理員允許的測試範圍內。", code=InspectionCode.GUILD_NOT_ALLOWED
-            )
-        if query.channel_id not in self.allowed_channels[query.guild_id]:
-            raise InspectionError(
-                "此頻道不在管理員允許的測試範圍內。", code=InspectionCode.CHANNEL_NOT_ALLOWED
-            )
-        await self.history.authorize(query, requester_id)
+        await self.authorize(query, requester_id=requester_id)
         selected = []
         async for message in self.history.messages_newest_first(query):
             if query.start is not None and message.created_at < query.start:

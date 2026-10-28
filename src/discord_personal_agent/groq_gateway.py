@@ -8,7 +8,7 @@ from langchain_groq import ChatGroq
 from langsmith import tracing_context
 from pydantic import SecretStr
 
-from .summary import SummaryError, SummaryInput, SummaryResult, validate_summary
+from .summary import RateLimited, SummaryError, SummaryInput, SummaryResult, validate_summary
 
 
 class GroqGateway:
@@ -66,9 +66,19 @@ class GroqGateway:
             return validate_summary(raw.content, request)
         except groq.AuthenticationError:
             raise SummaryError("Groq 驗證失敗，請管理員檢查本地 API Key。") from None
-        except groq.RateLimitError:
-            raise SummaryError("Groq 額度或速率限制，請稍後再試；本次未自動重試。") from None
+        except groq.RateLimitError as exc:
+            # The workflow decides whether to wait; this boundary only reports the provider's hint.
+            raise RateLimited(
+                "Groq 額度或速率限制，請稍後再試。", retry_after=_retry_after(exc.response)
+            ) from None
         except (groq.APITimeoutError, groq.APIConnectionError):
             raise SummaryError("Groq 連線失敗或逾時，未自動重試。") from None
         except groq.APIStatusError as exc:
             raise SummaryError(f"Groq 請求失敗（HTTP {exc.status_code}），未自動重試。") from None
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    try:
+        return max(0.0, float(response.headers["retry-after"]))
+    except (KeyError, ValueError):
+        return None

@@ -24,7 +24,7 @@ class History:
         self.read = 0
         self.checks = 0
 
-    async def authorize(self, query, requester_id):
+    async def authorize(self, query, requester_id, *, voice_text=False):
         self.checks += 1
         if self.denied:
             raise InspectionError("無權限")

@@ -6,7 +6,7 @@ from discord_personal_agent.inspection import Query, SummaryApplication
 
 
 class History:
-    async def authorize(self, query, requester_id):
+    async def authorize(self, query, requester_id, *, voice_text=False):
         pass
 
     async def messages_newest_first(self, query):
@@ -74,7 +74,7 @@ async def test_prepare_rechecks_access_before_returning_content():
     class RevokedHistory(History):
         revoked = False
 
-        async def authorize(self, query, requester_id):
+        async def authorize(self, query, requester_id, *, voice_text=False):
             if self.revoked:
                 raise InspectionError("權限已撤回")
 
@@ -94,7 +94,7 @@ async def test_prepare_allowlist_denial_does_not_read_content():
     from discord_personal_agent.inspection import InspectionError
 
     class UnreadHistory(History):
-        async def authorize(self, query, requester_id):
+        async def authorize(self, query, requester_id, *, voice_text=False):
             raise AssertionError("No Discord I/O before allowlist check")
 
     query = Query.create("https://discord.com/channels/111/222", received_at=datetime.now(UTC))

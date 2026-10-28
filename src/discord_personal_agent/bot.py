@@ -3,6 +3,7 @@
 import asyncio
 import io
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import closing
 from zoneinfo import ZoneInfo
 
@@ -16,24 +17,40 @@ from .inspection import Inspection, InspectionCode, InspectionError, Query
 from .privacy import PrivacyError
 from .summary import SummaryError
 from .summary_service import SummaryService
+from .summary_workflow import Notify
+from .voice_transcript import TranscriptLink
 
 logger = logging.getLogger(__name__)
 SUMMARY_MAX_BYTES = 8 * 1024 * 1024
 HELP = (
-    "以 Groq openai/gpt-oss-20b 整理文字對話，回傳含來源定位的 AI 摘要。\n"
-    "私訊使用 `/summary channel:<複製的頻道連結>`，hours、limit、topic 選填。\n"
-    "僅限管理員允許的測試頻道，你與 Bot 都須能檢視並讀取歷史。\n"
-    "hours 為 1～24；limit 為 1～500。兩者不填取最新最多 500 則。\n"
-    "兩者都填取時段內最新最多 limit 則；只填 hours 超過 500 則請縮短時間。\n"
-    "topic 可指定關注主題；圖片、附件只提供佔位符，不讀取內容或外部頁面。\n"
-    "先套用本機機密規則，再把對話、暱稱與 topic 送到 Groq；規則不保證涵蓋全部機密。\n"
-    "單批容量不足時請縮小範圍；每人同時一筆，不自動重試；尚未實作每日計次。\n"
-    "\n語音逐字稿（需語音程式同時執行，否則 /join、/leave 會顯示未回應）：\n"
-    "在伺服器先加入語音頻道再下 /join 開始錄音；在同一語音頻道下 /leave 停止。\n"
-    "逐字稿 TXT 會公開貼在下指令的頻道，並保存在本機；錄音前請先告知參與者。\n"
-    "/voicesummary 摘要逐字稿（尚未提供）。"
+    "### 📝 頻道摘要 `/summary`\n"
+    "私訊 Bot 使用，整理伺服器文字頻道的對話，回傳附來源連結的 AI 摘要。\n"
+    "- **channel**（必填）：頻道連結，在頻道上按右鍵 →「複製連結」\n"
+    "- **hours**（選填）：過去幾小時，1～24\n"
+    "- **limit**（選填）：最新最多幾則，1～500\n"
+    "- **topic**（選填）：想聚焦的主題\n"
+    "都不填時，取最新最多 500 則；同時填 hours 和 limit 時，取該時段內最新的 limit 則；"
+    "只填 hours 但超過 500 則時，請縮短時間。\n"
+    "\n"
+    "### 🎙️ 語音逐字稿 `/join`、`/leave`\n"
+    "- 先進入語音頻道，再下 `/join` 開始錄音\n"
+    "- 在同一個語音頻道下 `/leave` 停止\n"
+    "- 逐字稿 TXT 會公開貼在下指令的頻道，並保存在本機。**錄音前請先告知參與者。**\n"
+    "\n"
+    "### 📄 逐字稿摘要 `/voicesummary`\n"
+    "私訊 Bot 使用：`/voicesummary message:<逐字稿訊息連結>`，topic 選填。\n"
+    "在 TXT 那則訊息上按右鍵 →「複製訊息連結」；該頻道須在允許清單內。\n"
+    "\n"
+    "### ⚠️ 限制與隱私\n"
+    "- 只能摘要管理員允許的頻道，你和 Bot 都要能檢視並讀取歷史訊息\n"
+    "- 圖片與附件只顯示佔位符，不讀取內容或外部網頁\n"
+    "- 會先套用本機機密規則，再把對話、暱稱與 topic 送到 Groq；規則不保證能擋下所有機密\n"
+    "- 內容太多會自動分批再合併；需要超過 12 次模型呼叫或超過 600 秒時，會直接失敗\n"
+    "- 遇到 Groq 速率限制時，會照指示等待並重送一次；每人同時只能執行一筆\n"
+    "-# 模型：Groq openai/gpt-oss-20b"
 )
 # Mirrors the Rust voice program's registration in voice/src/main.rs.
+ServiceFactory = Callable[[], SummaryService]
 VOICE_COMMANDS = (
     ("join", "加入你所在的語音頻道並開始錄音"),
     ("leave", "停止錄音並離開語音頻道"),
@@ -134,74 +151,122 @@ class PersonalAgent(discord.Client):
             topic: str | None = None,
             limit: app_commands.Range[int, 1, 500] | None = None,
         ):
-            if interaction.guild_id is not None:
-                await interaction.response.send_message(
-                    "請改用與 Bot 的一對一私訊。", ephemeral=True
-                )
-                return
-            user_id = interaction.user.id
-            if user_id in self.active_users:
-                await interaction.response.send_message("你已有查詢進行中，請等候完成。")
-                return
-            self.active_users.add(user_id)
-            query = None
-            try:
-                await interaction.response.defer(thinking=True)
+
+            async def job(service: ServiceFactory, notify: Notify, located: dict) -> str:
                 query = Query.create(
                     channel, hours=hours, limit=limit, received_at=interaction.created_at
                 )
+                located.update(guild_id=query.guild_id, channel_id=query.channel_id)
+                return await service().run(
+                    query,
+                    requester_id=interaction.user.id,
+                    topic=topic or "",
+                    api_key=self.api_key,
+                    notify=notify,
+                )
+
+            await self._run_dm_job(interaction, job)
+
+        @self.tree.command(name="voicesummary", description="AI 摘要語音逐字稿 TXT")
+        @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=False)
+        @app_commands.allowed_installs(guilds=True, users=False)
+        @app_commands.describe(
+            message="逐字稿 TXT 那則訊息的連結（右鍵訊息 → 複製訊息連結）",
+            topic="選填：希望摘要聚焦的主題",
+        )
+        async def voicesummary(
+            interaction: discord.Interaction, message: str, topic: str | None = None
+        ):
+            async def job(service: ServiceFactory, notify: Notify, located: dict) -> str:
+                target = TranscriptLink.parse(message)
+                located.update(guild_id=target.guild_id, channel_id=target.channel_id)
+                return await service().run_transcript(
+                    message,
+                    requester_id=interaction.user.id,
+                    topic=topic or "",
+                    api_key=self.api_key,
+                    notify=notify,
+                )
+
+            await self._run_dm_job(interaction, job)
+
+        for name, description in VOICE_COMMANDS:
+            self.tree.add_command(_voice_command(name, description))
+
+    async def _run_dm_job(
+        self,
+        interaction: discord.Interaction,
+        job: Callable[[ServiceFactory, Notify, dict], Awaitable[str]],
+    ) -> None:
+        """DM-only lifecycle shared by summary commands: one job per user, DM delivery."""
+        if interaction.guild_id is not None:
+            await interaction.response.send_message("請改用與 Bot 的一對一私訊。", ephemeral=True)
+            return
+        user_id = interaction.user.id
+        if user_id in self.active_users:
+            await interaction.response.send_message("你已有查詢進行中，請等候完成。")
+            return
+        self.active_users.add(user_id)
+        # Filled by the job once its link is parsed, so failures can name the channel.
+        located: dict = {}
+        try:
+            await interaction.response.defer(thinking=True)
+
+            def service() -> SummaryService:
+                # Built after the job validates its input, so input errors are reported first.
                 if self.user is None:
                     raise InspectionError(
                         "Bot 尚未準備完成，請稍後再試。", code=InspectionCode.BOT_NOT_READY
                     )
-                service = SummaryService(
+                return SummaryService(
                     DiscordHistory(self, self.user.id),
-                    settings,
+                    self.settings,
                     GroqGateway(
-                        model="openai/gpt-oss-20b", max_output_tokens=settings.llm.max_output_tokens
+                        model="openai/gpt-oss-20b",
+                        max_output_tokens=self.settings.llm.max_output_tokens,
                     ),
                 )
-                text = await service.run(
-                    query, requester_id=user_id, topic=topic or "", api_key=self.api_key
-                )
-                async with asyncio.timeout(60):
-                    with discord_operation("send_dm", "傳送結果私訊"):
-                        await send_summary(interaction.user, text)
-                await interaction.edit_original_response(content="摘要處理完成，結果已送到此私訊。")
-            except (InspectionError, SummaryError, PrivacyError) as exc:
-                if isinstance(exc, InspectionError):
-                    logger.warning(
-                        "summary_failed type=InspectionError reason=%s "
-                        "guild_id=%s channel_id=%s stage=%s http_status=%s discord_code=%s",
-                        exc.code.value,
-                        query.guild_id if query else None,
-                        query.channel_id if query else None,
-                        exc.stage,
-                        exc.http_status,
-                        exc.discord_code,
-                    )
-                else:
-                    logger.warning("summary_failed type=%s", type(exc).__name__)
-                await interaction.edit_original_response(content=str(exc))
-            except TimeoutError:
-                logger.warning("inspection_timeout")
-                await interaction.edit_original_response(content="查詢逾時，請縮短範圍或稍後再試。")
-            except (discord.HTTPException, discord.InvalidData) as exc:
-                logger.warning(
-                    "discord_request_failed stage=interaction_or_channel_data "
-                    "type=%s status=%s code=%s",
-                    type(exc).__name__,
-                    getattr(exc, "status", None),
-                    getattr(exc, "code", None),
-                )
-                await interaction.edit_original_response(
-                    content="Discord 讀取或私訊交付失敗；請確認連結、雙方權限及私訊設定後重試。"
-                )
-            finally:
-                self.active_users.discard(user_id)
 
-        for name, description in VOICE_COMMANDS:
-            self.tree.add_command(_voice_command(name, description))
+            async def notify(text: str) -> None:
+                # Long waits (provider rate limits) replace the "thinking" placeholder.
+                await interaction.edit_original_response(content=text)
+
+            text = await job(service, notify, located)
+            async with asyncio.timeout(60):
+                with discord_operation("send_dm", "傳送結果私訊"):
+                    await send_summary(interaction.user, text)
+            await interaction.edit_original_response(content="摘要處理完成，結果已送到此私訊。")
+        except (InspectionError, SummaryError, PrivacyError) as exc:
+            if isinstance(exc, InspectionError):
+                logger.warning(
+                    "summary_failed type=InspectionError reason=%s "
+                    "guild_id=%s channel_id=%s stage=%s http_status=%s discord_code=%s",
+                    exc.code.value,
+                    located.get("guild_id"),
+                    located.get("channel_id"),
+                    exc.stage,
+                    exc.http_status,
+                    exc.discord_code,
+                )
+            else:
+                logger.warning("summary_failed type=%s", type(exc).__name__)
+            await interaction.edit_original_response(content=str(exc))
+        except TimeoutError:
+            logger.warning("inspection_timeout")
+            await interaction.edit_original_response(content="查詢逾時，請縮短範圍或稍後再試。")
+        except (discord.HTTPException, discord.InvalidData) as exc:
+            logger.warning(
+                "discord_request_failed stage=interaction_or_channel_data "
+                "type=%s status=%s code=%s",
+                type(exc).__name__,
+                getattr(exc, "status", None),
+                getattr(exc, "code", None),
+            )
+            await interaction.edit_original_response(
+                content="Discord 讀取或私訊交付失敗；請確認連結、雙方權限及私訊設定後重試。"
+            )
+        finally:
+            self.active_users.discard(user_id)
 
     async def setup_hook(self) -> None:
         commands = await self.tree.sync()

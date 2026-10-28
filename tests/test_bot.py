@@ -16,7 +16,12 @@ def test_command_registration_is_dm_only_with_bounded_hours():
     commands = {
         command.name: command.to_dict(client.tree) for command in client.tree.get_commands()
     }
-    assert set(commands) == {"summary", "help", "join", "leave"}
+    assert set(commands) == {"summary", "help", "join", "leave", "voicesummary"}
+    voice_summary = commands["voicesummary"]
+    assert voice_summary["contexts"] == [1]
+    voice_options = {item["name"]: item for item in voice_summary["options"]}
+    assert voice_options["message"]["required"] is True
+    assert voice_options["topic"]["required"] is False
     summary = commands["summary"]
     assert summary["contexts"] == [1]
     assert summary["integration_types"] == [0]
@@ -60,7 +65,7 @@ async def test_dm_success_delivers_summary_and_releases_user(monkeypatch):
     from discord_personal_agent.summary import SummaryResult
 
     class History:
-        async def authorize(self, query, requester_id):
+        async def authorize(self, query, requester_id, *, voice_text=False):
             pass
 
         async def messages_newest_first(self, query):
@@ -181,7 +186,7 @@ async def test_blocked_topic_never_sends_dm_or_file(monkeypatch):
     from discord_personal_agent.privacy import PrivacyGuard, Rule
 
     class History:
-        async def authorize(self, query, requester_id):
+        async def authorize(self, query, requester_id, *, voice_text=False):
             pass
 
         async def messages_newest_first(self, query):
@@ -262,5 +267,66 @@ async def test_voice_commands_leave_the_interaction_to_the_voice_program(name):
 def test_help_explains_voice_usage():
     from discord_personal_agent.bot import HELP
 
-    for text in ("/join", "/leave", "/voicesummary", "語音程式"):
+    for text in ("/join", "/leave", "/voicesummary message:", "錄音前請先告知參與者"):
         assert text in HELP
+    assert "尚未提供" not in HELP
+
+
+async def test_rate_limit_wait_is_shown_on_the_pending_reply(monkeypatch):
+    from types import SimpleNamespace
+
+    import discord_personal_agent.bot as module
+
+    async def run(self, query, *, requester_id, topic, api_key, notify):
+        await notify("Groq 速率限制：等待 5 秒後重送")
+        return "摘要結果"
+
+    monkeypatch.setattr(module.SummaryService, "run", run)
+    client = PersonalAgent(
+        Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}), api_key="fake"
+    )
+    client._connection.user = SimpleNamespace(id=999)
+    interaction = AsyncMock(spec=discord.Interaction)
+    interaction.guild_id = None
+    interaction.created_at = datetime(2026, 9, 10, 17, tzinfo=UTC)
+    interaction.user = SimpleNamespace(id=123, send=AsyncMock())
+    interaction.response = AsyncMock(spec=discord.InteractionResponse)
+    await client.tree.get_command("summary").callback(
+        interaction, "https://discord.com/channels/111/222", 1
+    )
+    edits = [call.kwargs["content"] for call in interaction.edit_original_response.await_args_list]
+    assert edits[0] == "Groq 速率限制：等待 5 秒後重送"
+    assert "完成" in edits[-1]
+
+
+async def test_voicesummary_delivers_by_dm_and_releases_user(monkeypatch):
+    from types import SimpleNamespace
+
+    import discord_personal_agent.bot as module
+
+    seen = {}
+
+    async def run_transcript(self, link, *, requester_id, topic, api_key, notify):
+        seen.update(link=link, requester_id=requester_id, topic=topic)
+        return "逐字稿摘要結果"
+
+    monkeypatch.setattr(module.SummaryService, "run_transcript", run_transcript)
+    client = PersonalAgent(
+        Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}), api_key="fake"
+    )
+    client._connection.user = SimpleNamespace(id=999)
+    interaction = AsyncMock(spec=discord.Interaction)
+    interaction.guild_id = None
+    interaction.created_at = datetime(2026, 9, 10, 17, tzinfo=UTC)
+    interaction.user = SimpleNamespace(id=123, send=AsyncMock())
+    interaction.response = AsyncMock(spec=discord.InteractionResponse)
+    await client.tree.get_command("voicesummary").callback(
+        interaction, "https://discord.com/channels/111/222/333", "週六"
+    )
+    assert seen == {
+        "link": "https://discord.com/channels/111/222/333",
+        "requester_id": 123,
+        "topic": "週六",
+    }
+    assert "逐字稿摘要結果" in interaction.user.send.call_args.kwargs["embed"].description
+    assert not client.active_users

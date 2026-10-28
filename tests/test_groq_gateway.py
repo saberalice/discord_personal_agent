@@ -120,3 +120,24 @@ async def test_invalid_or_truncated_output_fails_and_closes_transport(finish, co
     assert transport.closed
     assert transport.calls == 1
     assert "PRIVATE_INVALID_JSON" not in str(error.value)
+
+
+@pytest.mark.parametrize("header,expected", [({"retry-after": "3"}, 3.0), ({}, None)])
+async def test_rate_limit_exposes_retry_after_without_retrying(header, expected):
+    from discord_personal_agent.summary import RateLimited
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            429, headers=header, json={"error": {"message": "PRIVATE", "type": "rate_limit"}}
+        )
+
+    gateway = GroqGateway(
+        model="openai/gpt-oss-20b", max_output_tokens=4000, transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(RateLimited) as error:
+        await gateway.generate(summary_input(), api_key="unit-test-key")
+    assert error.value.retry_after == expected
+    assert len(calls) == 1

@@ -1,6 +1,7 @@
 """Provider-independent single-batch prompt and result contract."""
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Literal
@@ -33,30 +34,16 @@ def build_summary_input(
     sources = {
         f"m{index:03d}": message for index, message in enumerate(sanitized.conversation.messages, 1)
     }
-    lines = []
-    for source_id, message in sources.items():
-        # Keep the same transcript format, with a stable short reference per source.
-        single = Conversation(0, 0, 1, (message,))
-        lines.append({"source_id": source_id, "transcript": single.render(timezone)})
     payload = {
-        "selection": {
-            "start_inclusive": query.start.isoformat() if query.start else None,
-            "end_exclusive": query.end.isoformat(),
-            "latest_limit": query.limit
-            if query.limit is not None
-            else (500 if query.start is None else None),
-            "selected_count": conversation.selected_count,
-            "usable_count": len(sources),
-        },
+        "selection": selection_payload(query, conversation, len(sources)),
         "topic": sanitized.topic,
-        "records": lines,
+        "records": [
+            source_record(source_id, message, timezone) for source_id, message in sources.items()
+        ],
     }
-    system = (
-        files("discord_personal_agent").joinpath("prompts/summary_system.txt").read_text("utf-8")
-    )
     return SummaryInput(
         (
-            SystemMessage(content=system),
+            SystemMessage(content=load_prompt("summary_system.txt")),
             HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
         ),
         sources,
@@ -64,8 +51,43 @@ def build_summary_input(
     )
 
 
+def load_prompt(name: str) -> str:
+    return files("discord_personal_agent").joinpath(f"prompts/{name}").read_text("utf-8")
+
+
+def selection_payload(query: Query, conversation: Conversation, usable: int) -> dict:
+    return {
+        "start_inclusive": query.start.isoformat() if query.start else None,
+        "end_exclusive": query.end.isoformat(),
+        "latest_limit": query.limit
+        if query.limit is not None
+        else (500 if query.start is None else None),
+        "selected_count": conversation.selected_count,
+        "usable_count": usable,
+    }
+
+
+def source_record(
+    source_id: str, message: SourceMessage, timezone: ZoneInfo, *, part: str | None = None
+) -> dict:
+    # Keep the same transcript format, with a stable short reference per source.
+    record = {"source_id": source_id}
+    if part is not None:
+        record["part"] = part
+    record["transcript"] = Conversation(0, 0, 1, (message,)).render(timezone)
+    return record
+
+
 class SummaryError(Exception):
     """Safe summary failure without the model response attached."""
+
+
+class RateLimited(SummaryError):
+    """Provider 429; retry_after is the provider's own wait in seconds, if it sent one."""
+
+    def __init__(self, message: str, *, retry_after: float | None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class Segment(BaseModel):
@@ -117,7 +139,7 @@ def check_capacity(request: SummaryInput, limit: int) -> int:
 
 def render_summary(
     result: SummaryResult,
-    request: SummaryInput,
+    sources: Mapping[str, SourceMessage],
     query: Query,
     timezone: ZoneInfo,
     privacy: PrivacyGuard,
@@ -134,29 +156,71 @@ def render_summary(
     lines = [
         f"頻道：https://discord.com/channels/{query.guild_id}/{query.channel_id}",
         selection,
-        f"AI 摘要｜可用來源 {len(request.sources)} 則｜模型 openai/gpt-oss-20b",
+        f"AI 摘要｜可用來源 {len(sources)} 則｜模型 openai/gpt-oss-20b",
         "已套用本機機密規則；摘要可能有誤，請核對來源。",
     ]
     if result.status == "no_relevant_topic":
         lines.append("所選訊息中沒有與指定主題相關的討論。")
+    lines += _timeline(result, sources, query, timezone, privacy, link_label="查看起點")
+    return "\n".join(lines)
+
+
+def render_transcript_summary(
+    result: SummaryResult,
+    sources: Mapping[str, SourceMessage],
+    query: Query,
+    transcript_url: str,
+    timezone: ZoneInfo,
+    privacy: PrivacyGuard,
+) -> str:
+    times = sorted(source.created_at for source in sources.values())
+    span = " ～ ".join(
+        moment.astimezone(timezone).strftime("%Y-%m-%d %H:%M:%S")
+        for moment in (times[0], times[-1])
+    )
+    lines = [
+        f"發言時間：{span}（{timezone.key}）",
+        f"AI 摘要｜逐字稿 {len(sources)} 行｜模型 openai/gpt-oss-20b",
+        "已套用本機機密規則；語音辨識與摘要都可能有誤，請核對逐字稿。",
+    ]
+    if result.status == "no_relevant_topic":
+        lines.append("逐字稿中沒有與指定主題相關的內容。")
+    # Every segment would cite the same TXT message, so link it once after the timeline.
+    lines += _timeline(result, sources, query, timezone, privacy, link_label=None)
+    lines += ["", f"[查看逐字稿]({transcript_url})"]
+    return "\n".join(lines)
+
+
+def _timeline(
+    result: SummaryResult,
+    sources: Mapping[str, SourceMessage],
+    query: Query,
+    timezone: ZoneInfo,
+    privacy: PrivacyGuard,
+    *,
+    link_label: str | None,
+) -> list[str]:
+    lines = []
     ordered = sorted(
         result.segments,
-        key=lambda segment: min(request.sources[key].created_at for key in segment.source_ids),
+        key=lambda segment: min(sources[key].created_at for key in segment.source_ids),
     )
     for segment in ordered:
-        sources = sorted(
-            {key: request.sources[key] for key in segment.source_ids}.values(),
+        cited = sorted(
+            {key: sources[key] for key in segment.source_ids}.values(),
             key=lambda source: (source.created_at, source.id),
         )
-        first = sources[0].created_at.astimezone(timezone).strftime("%Y-%m-%d %H:%M")
-        last = sources[-1].created_at.astimezone(timezone).strftime("%Y-%m-%d %H:%M")
+        first = cited[0].created_at.astimezone(timezone).strftime("%Y-%m-%d %H:%M")
+        last = cited[-1].created_at.astimezone(timezone).strftime("%Y-%m-%d %H:%M")
         # Check the whole generated segment before adding trusted source URLs.
         safe = privacy.sanitize(
             Conversation(0, 0, 0, ()), topic=segment.title + "\n" + segment.summary
         ).topic
         lines.extend(["", f"{first} ～ {last}", safe])
+        if link_label is None:
+            continue
         lines.append(
-            f"[查看起點](https://discord.com/channels/"
-            f"{query.guild_id}/{query.channel_id}/{sources[0].id})"
+            f"[{link_label}](https://discord.com/channels/"
+            f"{query.guild_id}/{query.channel_id}/{cited[0].id})"
         )
-    return "\n".join(lines)
+    return lines
