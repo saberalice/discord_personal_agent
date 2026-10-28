@@ -68,6 +68,10 @@ python -m discord_personal_agent --no-voice       # 只有文字摘要
 - 同一個 Token 同時只能在一台機器上執行，換機前先停掉舊機器的 Bot。
 - Discord Developer Portal 不需要因換機調整；啟動時會自動同步斜線指令。
 
+### 用 Docker（Windows＋NVIDIA GPU）
+
+不想在主機安裝 Conda、Rust 與 CUDA toolkit 時，可改用 Docker Desktop：放好 `.env` 與 `config.toml` 後執行 `docker compose up -d --build`。準備步驟、停止與資料清理見 [Docker 指南](docs/docker.md)（尚未實際 build 驗證）。
+
 ## 使用
 
 在 Discord 私訊 Bot 輸入 `/help` 查看完整說明。語音的錄音、資料保存與清理方式見 [語音逐字稿](docs/voice-transcript.md)。錄音前請先告知參與者。

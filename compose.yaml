@@ -1,0 +1,29 @@
+services:
+  bot:
+    build: .
+    image: discord-personal-agent
+    # DISCORD_BOT_TOKEN and SHARED_LLM_API_KEY; the file itself never enters the image.
+    env_file: .env
+    environment:
+      BOT_CONFIG_PATH: /app/config.toml
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - voice-models:/app/voice/models
+      - voice-data:/app/voice/data
+    init: true
+    # Only SIGINT makes the voice program save the recording tail and finish its ASR queue;
+    # the grace period gives it time before Docker kills it.
+    stop_signal: SIGINT
+    stop_grace_period: 5m
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  voice-models:
+  voice-data:

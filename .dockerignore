@@ -1,0 +1,20 @@
+# Secrets, local state and build output stay out of the build context.
+.env
+.env.*
+config.toml
+**/*.db
+**/*.db-*
+**/*.sqlite3*
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+local-exports/
+discord-asr-integration-*.zip
+asr-extract/
+voice/target/
+voice/vendor/
+voice/models/
+voice/data/
+voice/.env

@@ -1,0 +1,3 @@
+# A Windows clone must keep LF: the shell scripts run inside Linux containers.
+* text=auto eol=lf
+*.wav binary
