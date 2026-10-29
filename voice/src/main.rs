@@ -31,6 +31,9 @@ use std::{
 };
 use tokio::sync::{mpsc, Mutex};
 
+const RECORDING_QUEUE_CAPACITY: usize = 3000;
+const SLOW_RECORDING_STEP: Duration = Duration::from_secs(1);
+
 #[derive(Clone)]
 struct Receiver {
     tx: mpsc::Sender<Input>,
@@ -224,7 +227,9 @@ impl Handler {
             .to_string();
         let root = self.root.clone();
         let recorder_session = session.clone();
-        let (tx, mut rx) = mpsc::channel(256);
+        // About 60 s of 20 ms voice ticks: a brief host stall must not end the recording,
+        // while a recorder that stays behind still fails loudly instead of dropping audio.
+        let (tx, mut rx) = mpsc::channel(RECORDING_QUEUE_CAPACITY);
         let accepting = Arc::new(AtomicBool::new(true));
         let start = Arc::new(OnceLock::new());
         let receiver = Receiver {
@@ -243,7 +248,17 @@ impl Handler {
                     if matches!(input, Input::Stop) {
                         break;
                     }
+                    let started = Instant::now();
                     store.handle(input)?;
+                    let elapsed = started.elapsed();
+                    // Durations and backlog only: enough to find the stalling step later.
+                    if elapsed >= SLOW_RECORDING_STEP {
+                        tracing::warn!(
+                            elapsed_ms = elapsed.as_millis() as u64,
+                            queued = rx.len(),
+                            "Slow recording step"
+                        );
+                    }
                 }
                 store.finish()
             })();

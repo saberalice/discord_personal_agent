@@ -31,6 +31,7 @@ python -m discord_personal_agent --no-voice   # 只有文字摘要
 - Ctrl+C：語音程式保存錄音尾段、完成辨識佇列後才結束，Python 會等它。期間再按 Ctrl+C 只會提示稍候。Ctrl+C 不會上傳 TXT，需要附件請先 `/leave`。
 - 只有 Ctrl+C（SIGINT）會走上述收尾；以 SIGTERM／`kill` 結束 Python 時不會通知語音程式。日後用 systemd 等工具管理時須另外處理。
 - 語音程式意外結束時日誌出現 `voice_exited_unexpectedly`，文字功能照常，重啟後才恢復錄音。
+- 錄音佇列最多可緩衝約 60 秒的音訊；錄音處理單步達 1 秒時記錄 `Slow recording step elapsed_ms= queued=`。佇列仍滿時語音程式記錄 `Recording queue unavailable` 並停止（不默默丟音訊），本場辨識結果留在 `voice/data/log.sqlite3`，但不會產生 TXT。
 
 Discord Developer Portal 不需要新增 intent；語音程式自行使用 `GUILDS`、`GUILD_VOICE_STATES`。Bot 在錄音伺服器需要 View Channels、Connect、Send Messages、Attach Files 權限。
 

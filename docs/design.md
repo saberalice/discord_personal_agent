@@ -200,10 +200,11 @@ QUEUED → PREPARING → GENERATING → DELIVERING → SUCCEEDED
 
 ### 11.1 Rust 允許的改動
 
-只做兩項：
+只做以下三項（第 3 項為 2026-10-29 Owen 同意追加）：
 
 1. `main.rs` 的 `tracing::info!(id, %text, "Transcribed")` 改為只記錄 id 與字數。
 2. Token 環境變數由 `DISCORD_TOKEN` 改讀 `DISCORD_BOT_TOKEN`，包含 `asr.rs` 啟動 llama-server 前的 `env_remove`（不同步改名會讓 llama-server 繼承 Token）。dotenvy 會由工作目錄往上層搜尋 `.env` 且不覆蓋既有環境變數，因此在 `voice/` 執行時可讀到專案根目錄的 `.env`。[dotenvy](https://docs.rs/dotenvy/0.15.7/dotenvy/fn.dotenv.html)
+3. `main.rs` 錄音佇列由 256 筆（約 5 秒 voice tick）加大為 3,000 筆（約 60 秒），並在單筆處理達 1 秒以上時記錄 `Slow recording step elapsed_ms= queued=`（只記數字）。起因：2026-10-29 一場約 38 分鐘的錄音中，錄音執行緒約 7 秒無進度，佇列滿後依原設計停止程式；原因尚未查明。佇列滿仍照原設計停止，不默默丟音訊。
 
 ### 11.2 Python 端
 
