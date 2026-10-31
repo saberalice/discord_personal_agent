@@ -38,8 +38,9 @@ HELP = (
     "- 逐字稿 TXT 會公開貼在下指令的頻道，並保存在本機。**錄音前請先告知參與者。**\n"
     "\n"
     "### 📄 逐字稿摘要 `/voicesummary`\n"
-    "私訊 Bot 使用：`/voicesummary message:<逐字稿訊息連結>`，topic 選填。\n"
-    "在 TXT 那則訊息上按右鍵 →「複製訊息連結」；該頻道須在允許清單內。\n"
+    "- **在逐字稿所在頻道下指令**：自動摘要最近 100 則內最新的逐字稿，結果公開貼在頻道\n"
+    "- **私訊 Bot**：`/voicesummary message:<逐字稿訊息連結>`，結果只私訊給你\n"
+    "在 TXT 那則訊息上按右鍵 →「複製訊息連結」；topic 選填，該頻道須在允許清單內。\n"
     "\n"
     "### ⚠️ 限制與隱私\n"
     "- 只能摘要管理員允許的頻道，你和 Bot 都要能檢視並讀取歷史訊息\n"
@@ -86,10 +87,10 @@ def render_inspection(
     return text
 
 
-async def send_summary(user: discord.User, text: str) -> None:
+async def send_summary(send: Callable[..., Awaitable[object]], text: str) -> None:
     """Deliver an embed, or a short preview with the complete summary in memory."""
     if len(text) <= 3500:
-        await user.send(embed=discord.Embed(title="頻道摘要", description=text))
+        await send(embed=discord.Embed(title="頻道摘要", description=text))
         return
     payload = text.encode("utf-8")
     if len(payload) > SUMMARY_MAX_BYTES:
@@ -99,7 +100,7 @@ async def send_summary(user: discord.User, text: str) -> None:
         io.BytesIO(payload) as buffer,
         closing(discord.File(buffer, filename="summary.txt")) as file,
     ):
-        await user.send(embed=discord.Embed(title="頻道摘要", description=preview), file=file)
+        await send(embed=discord.Embed(title="頻道摘要", description=preview), file=file)
 
 
 def _voice_command(name: str, description: str) -> app_commands.Command:
@@ -165,46 +166,76 @@ class PersonalAgent(discord.Client):
                     notify=notify,
                 )
 
-            await self._run_dm_job(interaction, job)
+            await self._run_summary_job(interaction, job)
 
         @self.tree.command(name="voicesummary", description="AI 摘要語音逐字稿 TXT")
-        @app_commands.allowed_contexts(guilds=False, dms=True, private_channels=False)
+        @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=False)
         @app_commands.allowed_installs(guilds=True, users=False)
         @app_commands.describe(
-            message="逐字稿 TXT 那則訊息的連結（右鍵訊息 → 複製訊息連結）",
+            message="逐字稿訊息連結；在頻道中省略時摘要最近的逐字稿，私訊中必填",
             topic="選填：希望摘要聚焦的主題",
         )
         async def voicesummary(
-            interaction: discord.Interaction, message: str, topic: str | None = None
+            interaction: discord.Interaction,
+            message: str | None = None,
+            topic: str | None = None,
         ):
+            guild_id, channel_id = interaction.guild_id, interaction.channel_id
+
             async def job(service: ServiceFactory, notify: Notify, located: dict) -> str:
-                target = TranscriptLink.parse(message)
-                located.update(guild_id=target.guild_id, channel_id=target.channel_id)
-                return await service().run_transcript(
-                    message,
+                common = dict(
                     requester_id=interaction.user.id,
                     topic=topic or "",
                     api_key=self.api_key,
                     notify=notify,
                 )
+                if message:
+                    self._link_target(message, guild_id, channel_id, located)
+                    return await service().run_transcript(message, **common)
+                if guild_id is None:
+                    raise InspectionError(
+                        "私訊中請提供逐字稿訊息連結，或到逐字稿所在頻道直接下指令。",
+                        code=InspectionCode.INVALID_LINK,
+                    )
+                located.update(guild_id=guild_id, channel_id=channel_id)
+                return await service().run_latest_transcript(guild_id, channel_id, **common)
 
-            await self._run_dm_job(interaction, job)
+            await self._run_summary_job(interaction, job, public_in_guild=True)
 
         for name, description in VOICE_COMMANDS:
             self.tree.add_command(_voice_command(name, description))
 
-    async def _run_dm_job(
+    @staticmethod
+    def _link_target(
+        link: str, guild_id: int | None, channel_id: int | None, located: dict
+    ) -> TranscriptLink:
+        target = TranscriptLink.parse(link)
+        located.update(guild_id=target.guild_id, channel_id=target.channel_id)
+        # The result is public in a channel, so another channel's content must not reach it.
+        if guild_id is not None and (target.guild_id, target.channel_id) != (guild_id, channel_id):
+            raise InspectionError(
+                "在頻道中只能處理本頻道的逐字稿；其他頻道的逐字稿請到該頻道操作或改用私訊摘要。",
+                code=InspectionCode.INVALID_LINK,
+            )
+        return target
+
+    async def _run_summary_job(
         self,
         interaction: discord.Interaction,
         job: Callable[[ServiceFactory, Notify, dict], Awaitable[str]],
+        *,
+        public_in_guild: bool = False,
     ) -> None:
-        """DM-only lifecycle shared by summary commands: one job per user, DM delivery."""
-        if interaction.guild_id is not None:
+        """Lifecycle shared by summary commands: one job per user, delivered by DM or in place."""
+        in_guild = interaction.guild_id is not None
+        if in_guild and not public_in_guild:
             await interaction.response.send_message("請改用與 Bot 的一對一私訊。", ephemeral=True)
             return
         user_id = interaction.user.id
         if user_id in self.active_users:
-            await interaction.response.send_message("你已有查詢進行中，請等候完成。")
+            await interaction.response.send_message(
+                "你已有查詢進行中，請等候完成。", ephemeral=in_guild
+            )
             return
         self.active_users.add(user_id)
         # Filled by the job once its link is parsed, so failures can name the channel.
@@ -233,8 +264,18 @@ class PersonalAgent(discord.Client):
 
             text = await job(service, notify, located)
             async with asyncio.timeout(60):
+                if in_guild:
+
+                    async def replace_placeholder(*, embed, file=None) -> None:
+                        await interaction.edit_original_response(
+                            content=None, embed=embed, attachments=[file] if file else []
+                        )
+
+                    with discord_operation("send_channel", "傳送結果到頻道"):
+                        await send_summary(replace_placeholder, text)
+                    return
                 with discord_operation("send_dm", "傳送結果私訊"):
-                    await send_summary(interaction.user, text)
+                    await send_summary(interaction.user.send, text)
             await interaction.edit_original_response(content="摘要處理完成，結果已送到此私訊。")
         except (InspectionError, SummaryError, PrivacyError) as exc:
             if isinstance(exc, InspectionError):
@@ -263,7 +304,7 @@ class PersonalAgent(discord.Client):
                 getattr(exc, "code", None),
             )
             await interaction.edit_original_response(
-                content="Discord 讀取或私訊交付失敗；請確認連結、雙方權限及私訊設定後重試。"
+                content="Discord 讀取或結果交付失敗；請確認連結、雙方權限及私訊設定後重試。"
             )
         finally:
             self.active_users.discard(user_id)

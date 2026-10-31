@@ -270,5 +270,6 @@ rm -rf "voice/data/$S"
 
 - `voice_transcript.py`：`TranscriptLink.parse` 只接受訊息連結；`parse_transcript` 以檔名日期（固定 UTC+8）為起點，行時間倒退即加一日；空白行略過，其餘任何無法解析的行（含 CRLF、非 UTF-8）整次失敗，錯誤只報行號、不回顯內容。每行成為一個 `SourceMessage`，`id` 皆為 TXT 訊息 ID，使摘要連結指向該訊息。
 - `discord_adapter.py`：`DiscordHistory.transcript` 驗證作者為本 bot、恰有一個符合檔名的附件且不超過 8 MiB 後才下載。
-- `SummaryService.run_transcript` 與 `/summary` 共用分批流程與交付；標頭改為發言時間；各段不附連結，結尾只附一次逐字稿 TXT 訊息連結。`bot.py` 兩個私訊指令共用 `_run_dm_job`。
+- `SummaryService.run_transcript` 與 `/summary` 共用分批流程與交付；標頭改為發言時間；各段不附連結，結尾只附一次逐字稿 TXT 訊息連結。`bot.py` 兩個摘要指令共用 `_run_summary_job`。
+- 頻道內使用（工作票 13）：`DiscordHistory.latest_transcript` 以一次 history 呼叫讀最近 100 則（Discord 單次上限），取最新一則本 bot 貼出且附件檔名符合者，其餘內容不讀取。`SummaryService.run_latest_transcript` 與 `run_transcript` 只差取得 TXT 的方式，權限、允許清單與交付前再查核相同。頻道內結果以 `edit_original_response` 取代「思考中」訊息；互動回覆走 webhook token，不需 Bot 在頻道的 Send Messages 權限。
 - 分批 Prompt 補一行「資料可能是語音辨識逐字稿、可能有同音錯字」。

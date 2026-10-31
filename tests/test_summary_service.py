@@ -115,7 +115,7 @@ class TranscriptHistory:
     ):
         from discord_personal_agent.voice_transcript import TranscriptFile
 
-        self.file = TranscriptFile("2026-09-11_10-00-00.txt", data)
+        self.file = TranscriptFile("2026-09-11_10-00-00.txt", data, 333)
         self.revoke = revoke
         self.authorized = []
         self.downloads = 0
@@ -127,6 +127,10 @@ class TranscriptHistory:
 
     async def transcript(self, message_id):
         assert message_id == 333
+        self.downloads += 1
+        return self.file
+
+    async def latest_transcript(self):
         self.downloads += 1
         return self.file
 
@@ -160,6 +164,30 @@ async def test_transcript_summary_cites_times_and_links_back_to_the_transcript()
     assert text.splitlines()[-1] == "[查看逐字稿](https://discord.com/channels/111/222/333)"
     assert "最新最多" not in text
     assert history.authorized == [(111, 222, True), (111, 222, True)]
+
+
+async def test_latest_transcript_is_summarized_and_links_to_the_message_it_found():
+    history = TranscriptHistory()
+    gateway = transcript_gateway()
+    service = SummaryService(
+        history, Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}), gateway
+    )
+    text = await service.run_latest_transcript(111, 222, requester_id=2, topic="", api_key="fake")
+    assert "確定週六" in text
+    assert text.splitlines()[-1] == "[查看逐字稿](https://discord.com/channels/111/222/333)"
+    assert history.authorized == [(111, 222, True), (111, 222, True)]
+
+
+async def test_latest_transcript_outside_the_allowlist_is_never_read():
+    history = TranscriptHistory()
+    gateway = transcript_gateway()
+    service = SummaryService(
+        history, Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({999})}), gateway
+    )
+    with pytest.raises(InspectionError):
+        await service.run_latest_transcript(111, 222, requester_id=2, topic="", api_key="fake")
+    assert history.downloads == 0
+    gateway.generate.assert_not_awaited()
 
 
 async def test_transcript_outside_the_allowlist_is_never_downloaded():

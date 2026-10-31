@@ -18,6 +18,7 @@ MAX_BYTES = 8 * 1024 * 1024
 class TranscriptFile:
     filename: str
     data: bytes
+    message_id: int
 
 
 @dataclass(frozen=True)

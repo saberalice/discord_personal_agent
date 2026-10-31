@@ -4,7 +4,7 @@
 
 - **`/summary`**：私訊 Bot，把指定文字頻道一段時間內的對話整理成可回查原文的 AI 時間線（Groq `openai/gpt-oss-20b`，經 LangChain）。內容超過單次容量時自動分批再合併。
 - **`/join`、`/leave`**：在語音頻道錄音，於本機辨識後把逐字稿 TXT 貼回頻道（Qwen3-ASR，經 llama.cpp）。
-- **`/voicesummary`**：私訊 Bot，摘要上述逐字稿 TXT。
+- **`/voicesummary`**：摘要上述逐字稿 TXT。在頻道下指令時預設摘要最新一份並公開貼出，私訊則需提供訊息連結、結果只給你。
 
 送出前會先套用本機機密規則；Bot Token、Groq Key 只放在本機 `.env`，不進 Git。
 

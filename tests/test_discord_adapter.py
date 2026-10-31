@@ -259,6 +259,7 @@ async def test_transcript_is_read_from_the_bots_own_attachment(setup, channel_ty
     await history.authorize(query, 123, voice_text=True)
     file = await history.transcript(333)
     assert (file.filename, file.data) == ("2026-09-11_10-00-00.txt", b"[10:00:01] A: ok\n")
+    assert file.message_id == 333
     client.http.get_message.assert_awaited_once_with(222, 333)
 
 
@@ -288,4 +289,42 @@ async def test_other_messages_are_refused_without_downloading(setup, message):
     with pytest.raises(InspectionError) as failure:
         await history.transcript(333)
     assert failure.value.code.value == "invalid_transcript"
+    client.http.get_from_cdn.assert_not_awaited()
+
+
+def history_page(*messages):
+    async def logs(channel_id, limit, **kwargs):
+        logs.limits.append(limit)
+        return list(messages)
+
+    logs.limits = []
+    return logs
+
+
+async def test_latest_transcript_skips_chatter_and_takes_the_newest(setup):
+    client, query = setup
+    chatter = {**transcript_message(author_id=555), "id": "400"}
+    plain_bot = {**transcript_message(), "id": "399", "attachments": []}
+    newest = {**transcript_message(), "id": "398"}
+    older = {**transcript_message(filename="2026-09-10_10-00-00.txt"), "id": "397"}
+    client.http.logs_from = history_page(chatter, plain_bot, newest, older)
+    client.http.get_from_cdn = AsyncMock(return_value=b"[10:00:01] A: ok\n")
+    history = DiscordHistory(client, 999)
+    await history.authorize(query, 123, voice_text=True)
+    file = await history.latest_transcript()
+    assert (file.filename, file.message_id) == ("2026-09-11_10-00-00.txt", 398)
+    assert client.http.logs_from.limits == [100]
+    client.http.get_from_cdn.assert_awaited_once()
+
+
+async def test_latest_transcript_missing_fails_without_downloading(setup):
+    client, query = setup
+    client.http.logs_from = history_page({**transcript_message(author_id=555), "id": "400"})
+    client.http.get_from_cdn = AsyncMock()
+    history = DiscordHistory(client, 999)
+    await history.authorize(query, 123, voice_text=True)
+    with pytest.raises(InspectionError) as failure:
+        await history.latest_transcript()
+    assert failure.value.code.value == "invalid_transcript"
+    assert "100" in str(failure.value)
     client.http.get_from_cdn.assert_not_awaited()

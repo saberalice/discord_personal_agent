@@ -11,16 +11,16 @@ from discord_personal_agent.conversation import SourceMessage
 from discord_personal_agent.inspection import Inspection, Query
 
 
-def test_command_registration_is_dm_only_with_bounded_hours():
+def test_command_registration_limits_contexts_and_hours():
     client = PersonalAgent(Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}))
     commands = {
         command.name: command.to_dict(client.tree) for command in client.tree.get_commands()
     }
     assert set(commands) == {"summary", "help", "join", "leave", "voicesummary"}
     voice_summary = commands["voicesummary"]
-    assert voice_summary["contexts"] == [1]
+    assert sorted(voice_summary["contexts"]) == [0, 1]
     voice_options = {item["name"]: item for item in voice_summary["options"]}
-    assert voice_options["message"]["required"] is True
+    assert voice_options["message"]["required"] is False
     assert voice_options["topic"]["required"] is False
     summary = commands["summary"]
     assert summary["contexts"] == [1]
@@ -173,9 +173,9 @@ async def test_long_summary_delivers_txt_and_closes_buffer_even_on_failure(failu
     user = SimpleNamespace(send=send)
     if failure:
         with pytest.raises(discord.Forbidden):
-            await send_summary(user, text)
+            await send_summary(user.send, text)
     else:
-        await send_summary(user, text)
+        await send_summary(user.send, text)
     assert captured["buffer"].closed
 
 
@@ -330,3 +330,100 @@ async def test_voicesummary_delivers_by_dm_and_releases_user(monkeypatch):
     }
     assert "逐字稿摘要結果" in interaction.user.send.call_args.kwargs["embed"].description
     assert not client.active_users
+
+
+def voice_summary_client(monkeypatch):
+    from types import SimpleNamespace
+
+    import discord_personal_agent.bot as module
+
+    calls = []
+
+    async def run_transcript(self, link, *, requester_id, topic, api_key, notify):
+        calls.append(("link", link))
+        return "逐字稿摘要結果"
+
+    async def run_latest_transcript(
+        self, guild_id, channel_id, *, requester_id, topic, api_key, notify
+    ):
+        calls.append(("latest", guild_id, channel_id))
+        return "逐字稿摘要結果"
+
+    monkeypatch.setattr(module.SummaryService, "run_transcript", run_transcript)
+    monkeypatch.setattr(module.SummaryService, "run_latest_transcript", run_latest_transcript)
+    client = PersonalAgent(
+        Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}), api_key="fake"
+    )
+    client._connection.user = SimpleNamespace(id=999)
+    interaction = AsyncMock(spec=discord.Interaction)
+    interaction.guild_id = 111
+    interaction.channel_id = 222
+    interaction.created_at = datetime(2026, 9, 10, 17, tzinfo=UTC)
+    interaction.user = SimpleNamespace(id=123, send=AsyncMock())
+    interaction.response = AsyncMock(spec=discord.InteractionResponse)
+    return client, interaction, calls
+
+
+async def test_voicesummary_in_a_channel_defaults_to_latest_and_posts_publicly(monkeypatch):
+    client, interaction, calls = voice_summary_client(monkeypatch)
+    await client.tree.get_command("voicesummary").callback(interaction)
+    assert calls == [("latest", 111, 222)]
+    assert interaction.response.defer.call_args.kwargs.get("ephemeral", False) is False
+    interaction.user.send.assert_not_awaited()
+    edit = interaction.edit_original_response.call_args.kwargs
+    assert "逐字稿摘要結果" in edit["embed"].description
+    assert edit["content"] is None
+    assert not client.active_users
+
+
+async def test_voicesummary_in_a_channel_accepts_a_link_to_that_channel(monkeypatch):
+    client, interaction, calls = voice_summary_client(monkeypatch)
+    link = "https://discord.com/channels/111/222/333"
+    await client.tree.get_command("voicesummary").callback(interaction, link)
+    assert calls == [("link", link)]
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["https://discord.com/channels/111/999/333", "https://discord.com/channels/888/222/333"],
+    ids=["other-channel", "other-guild"],
+)
+async def test_voicesummary_in_a_channel_never_publishes_another_channel(monkeypatch, link):
+    client, interaction, calls = voice_summary_client(monkeypatch)
+    await client.tree.get_command("voicesummary").callback(interaction, link)
+    assert calls == []
+    assert "私訊" in interaction.edit_original_response.call_args.kwargs["content"]
+    assert not client.active_users
+
+
+async def test_voicesummary_in_a_dm_requires_a_link(monkeypatch):
+    client, interaction, calls = voice_summary_client(monkeypatch)
+    interaction.guild_id = None
+    interaction.channel_id = 777
+    await client.tree.get_command("voicesummary").callback(interaction)
+    assert calls == []
+    assert "連結" in interaction.edit_original_response.call_args.kwargs["content"]
+    interaction.user.send.assert_not_awaited()
+
+
+async def test_long_channel_summary_replaces_the_placeholder_with_a_txt(monkeypatch):
+    import discord_personal_agent.bot as module
+
+    client, interaction, _ = voice_summary_client(monkeypatch)
+
+    async def long_result(self, *args, **kwargs):
+        return "段落\n" * 2000
+
+    monkeypatch.setattr(module.SummaryService, "run_latest_transcript", long_result)
+    await client.tree.get_command("voicesummary").callback(interaction)
+    edit = interaction.edit_original_response.call_args.kwargs
+    assert [file.filename for file in edit["attachments"]] == ["summary.txt"]
+    assert "僅預覽" in edit["embed"].description
+
+
+async def test_second_channel_request_is_refused_only_to_the_requester(monkeypatch):
+    client, interaction, calls = voice_summary_client(monkeypatch)
+    client.active_users.add(123)
+    await client.tree.get_command("voicesummary").callback(interaction)
+    assert calls == []
+    assert interaction.response.send_message.call_args.kwargs["ephemeral"] is True

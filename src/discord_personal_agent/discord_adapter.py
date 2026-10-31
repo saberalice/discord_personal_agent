@@ -12,6 +12,8 @@ from .inspection import InspectionCode, InspectionError, Query
 from .voice_transcript import FILENAME, MAX_BYTES, TranscriptFile
 
 logger = logging.getLogger(__name__)
+# One history request (Discord's page size), so a default lookup stays a single call.
+LATEST_TRANSCRIPT_SEARCH = 100
 
 
 @contextmanager
@@ -133,6 +135,25 @@ class DiscordHistory:
             raise InspectionError(
                 "只能摘要本 Bot 貼出的語音逐字稿。", code=InspectionCode.INVALID_TRANSCRIPT
             )
+        return await self._download_transcript(message)
+
+    async def latest_transcript(self) -> TranscriptFile:
+        """Newest TXT the voice program posted here; other messages are only skipped over."""
+        if self.channel is None:
+            raise RuntimeError("History must be authorized before reading")
+        with discord_operation("read_history", "讀取訊息歷史"):
+            async for message in self.channel.history(limit=LATEST_TRANSCRIPT_SEARCH):
+                if message.author.id == self.bot_id and any(
+                    FILENAME.fullmatch(item.filename) for item in message.attachments
+                ):
+                    return await self._download_transcript(message)
+        raise InspectionError(
+            f"最近 {LATEST_TRANSCRIPT_SEARCH} 則訊息內找不到本 Bot 貼出的語音逐字稿，"
+            "請提供逐字稿訊息連結。",
+            code=InspectionCode.INVALID_TRANSCRIPT,
+        )
+
+    async def _download_transcript(self, message: discord.Message) -> TranscriptFile:
         files = [item for item in message.attachments if FILENAME.fullmatch(item.filename)]
         if len(files) != 1:
             raise InspectionError(
@@ -144,4 +165,4 @@ class DiscordHistory:
             )
         with discord_operation("download_transcript", "下載逐字稿"):
             data = await files[0].read()
-        return TranscriptFile(files[0].filename, data)
+        return TranscriptFile(files[0].filename, data, message.id)

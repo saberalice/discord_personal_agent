@@ -40,7 +40,7 @@ Discord Developer Portal 不需要新增 intent；語音程式自行使用 `GUIL
 1. 在伺服器先加入一般語音頻道，下 `/join`，bot 在頻道發出開始錄音告知。錄音前請先告知參與者。
 2. 在同一語音頻道下 `/leave`；等待辨識完成後，TXT 公開貼在下指令的文字頻道。
 3. 只開 Python（`--no-voice` 或語音程式未啟動）時，`/join`、`/leave` 會顯示「應用程式未回應」。
-4. 摘要逐字稿：在 Discord 對 TXT 那則訊息按右鍵「複製訊息連結」，私訊 bot `/voicesummary message:<連結>`，`topic` 選填。該頻道（一般文字頻道或語音頻道的文字聊天）須加入 `config.toml` 允許清單；只開 Python 時也能使用。
+4. 摘要逐字稿：在 TXT 所在頻道下 `/voicesummary`，自動摘要最近 100 則內最新的逐字稿，結果公開貼在頻道；或對 TXT 那則訊息按右鍵「複製訊息連結」，私訊 bot `/voicesummary message:<連結>`，結果只私訊給你。`topic` 皆選填。該頻道（一般文字頻道或語音頻道的文字聊天）須加入 `config.toml` 允許清單；只開 Python 時也能使用。
 
 ## 4. 本機資料與清理
 
