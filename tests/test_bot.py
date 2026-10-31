@@ -16,7 +16,23 @@ def test_command_registration_limits_contexts_and_hours():
     commands = {
         command.name: command.to_dict(client.tree) for command in client.tree.get_commands()
     }
-    assert set(commands) == {"summary", "help", "join", "leave", "voicesummary"}
+    assert set(commands) == {
+        "summary",
+        "help",
+        "join",
+        "leave",
+        "voicesummary",
+        "asking",
+        "詢問逐字稿",
+    }
+    asking = commands["asking"]
+    assert asking["contexts"] == [0]
+    asking_options = {item["name"]: item for item in asking["options"]}
+    assert asking_options["question"]["required"] is True
+    assert asking_options["question"]["max_length"] == 500
+    assert asking_options["message"]["required"] is False
+    assert commands["詢問逐字稿"]["contexts"] == [0]
+    assert commands["詢問逐字稿"]["type"] == 3
     voice_summary = commands["voicesummary"]
     assert sorted(voice_summary["contexts"]) == [0, 1]
     voice_options = {item["name"]: item for item in voice_summary["options"]}
@@ -427,3 +443,76 @@ async def test_second_channel_request_is_refused_only_to_the_requester(monkeypat
     await client.tree.get_command("voicesummary").callback(interaction)
     assert calls == []
     assert interaction.response.send_message.call_args.kwargs["ephemeral"] is True
+
+
+def question_client(monkeypatch):
+    import discord_personal_agent.bot as module
+
+    client, interaction, _ = voice_summary_client(monkeypatch)
+    calls = []
+
+    async def answer_transcript(
+        self, guild_id, channel_id, message_id, question, *, requester_id, api_key, notify
+    ):
+        calls.append((guild_id, channel_id, message_id, question))
+        return "問答結果"
+
+    monkeypatch.setattr(module.SummaryService, "answer_transcript", answer_transcript)
+    return client, interaction, calls
+
+
+async def test_asking_defaults_to_latest_and_posts_publicly(monkeypatch):
+    client, interaction, calls = question_client(monkeypatch)
+    await client.tree.get_command("asking").callback(interaction, "誰？")
+    assert calls == [(111, 222, None, "誰？")]
+    edit = interaction.edit_original_response.call_args.kwargs
+    assert "問答結果" in edit["embed"].description
+    assert edit["embed"].title == "逐字稿問答"
+    interaction.user.send.assert_not_awaited()
+
+
+async def test_asking_accepts_only_a_link_to_this_channel(monkeypatch):
+    client, interaction, calls = question_client(monkeypatch)
+    command = client.tree.get_command("asking")
+    await command.callback(interaction, "誰？", "https://discord.com/channels/111/222/333")
+    assert calls == [(111, 222, 333, "誰？")]
+    calls.clear()
+    await command.callback(interaction, "誰？", "https://discord.com/channels/111/999/333")
+    assert calls == []
+    assert "本頻道" in interaction.edit_original_response.call_args.kwargs["content"]
+
+
+def transcript_target(*, author=999, filename="2026-09-11_10-00-00.txt"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=333,
+        author=SimpleNamespace(id=author),
+        attachments=[SimpleNamespace(filename=filename)],
+    )
+
+
+async def test_context_menu_opens_a_modal_and_submits_to_the_chosen_message(monkeypatch):
+    client, interaction, calls = question_client(monkeypatch)
+    command = client.tree.get_command("詢問逐字稿", type=discord.AppCommandType.message)
+    await command.callback(interaction, transcript_target())
+    modal = interaction.response.send_modal.await_args.args[0]
+    assert modal.question.max_length == 500
+    modal.question._value = "誰說週六？"
+    await modal.on_submit(interaction)
+    assert calls == [(111, 222, 333, "誰說週六？")]
+    assert "問答結果" in interaction.edit_original_response.call_args.kwargs["embed"].description
+
+
+@pytest.mark.parametrize(
+    "target",
+    [transcript_target(author=555), transcript_target(filename="notes.txt")],
+    ids=["other-author", "other-file"],
+)
+async def test_context_menu_on_other_messages_tells_only_the_requester(monkeypatch, target):
+    client, interaction, calls = question_client(monkeypatch)
+    command = client.tree.get_command("詢問逐字稿", type=discord.AppCommandType.message)
+    await command.callback(interaction, target)
+    interaction.response.send_modal.assert_not_awaited()
+    assert interaction.response.send_message.call_args.kwargs["ephemeral"] is True
+    assert calls == []

@@ -10,6 +10,7 @@ from discord_personal_agent.inspection import InspectionError, Query
 from discord_personal_agent.privacy import PrivacyGuard, Rule
 from discord_personal_agent.summary import SummaryError, SummaryResult
 from discord_personal_agent.summary_service import SummaryService
+from discord_personal_agent.transcript_question import AnswerResult
 
 
 @pytest.mark.parametrize(
@@ -176,6 +177,56 @@ async def test_latest_transcript_is_summarized_and_links_to_the_message_it_found
     assert "確定週六" in text
     assert text.splitlines()[-1] == "[查看逐字稿](https://discord.com/channels/111/222/333)"
     assert history.authorized == [(111, 222, True), (111, 222, True)]
+
+
+async def question_service(history):
+    gateway = AsyncMock()
+    gateway.answer.return_value = AnswerResult(
+        status="answered", answer="Alex 說週六", source_ids=["m001"]
+    )
+    return (
+        SummaryService(
+            history, Settings(ZoneInfo("Asia/Taipei"), {111: frozenset({222})}), gateway
+        ),
+        gateway,
+    )
+
+
+async def test_question_on_a_chosen_message_answers_and_rechecks_permissions():
+    history = TranscriptHistory()
+    service, gateway = await question_service(history)
+    text = await service.answer_transcript(
+        111, 222, 333, "誰說週六？", requester_id=2, api_key="fake"
+    )
+    assert "Alex 說週六" in text
+    assert text.splitlines()[-1] == "[查看逐字稿](https://discord.com/channels/111/222/333)"
+    assert history.authorized == [(111, 222, True), (111, 222, True)]
+
+
+async def test_question_without_a_message_uses_the_latest_transcript():
+    history = TranscriptHistory()
+    service, _ = await question_service(history)
+    text = await service.answer_transcript(
+        111, 222, None, "誰說週六？", requester_id=2, api_key="fake"
+    )
+    assert "Alex 說週六" in text
+    assert history.downloads == 1
+
+
+async def test_question_on_an_empty_transcript_never_calls_the_model():
+    history = TranscriptHistory(data=b"")
+    service, gateway = await question_service(history)
+    text = await service.answer_transcript(111, 222, 333, "誰？", requester_id=2, api_key="fake")
+    assert "未呼叫 LLM" in text
+    gateway.answer.assert_not_awaited()
+
+
+async def test_question_without_a_key_fails_clearly():
+    history = TranscriptHistory()
+    service, gateway = await question_service(history)
+    with pytest.raises(SummaryError, match="金鑰"):
+        await service.answer_transcript(111, 222, 333, "誰？", requester_id=2, api_key=" ")
+    gateway.answer.assert_not_awaited()
 
 
 async def test_latest_transcript_outside_the_allowlist_is_never_read():

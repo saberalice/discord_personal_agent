@@ -42,9 +42,43 @@ class LlmGateway(Protocol):
 
 
 @dataclass
-class _Budget:
+class Budget:
     deadline: float
     calls: int = 0
+
+
+async def bounded_call[T](
+    call: Callable[[], Awaitable[T]],
+    budget: Budget,
+    notify: Notify,
+    label: str,
+    *,
+    clock: Callable[[], float],
+    sleep: Callable[[float], Awaitable[None]],
+) -> T:
+    """One model request within the job budget; a 429 waits as told and retries once."""
+    retried = False
+    while True:
+        remaining = budget.deadline - clock()
+        if remaining <= 0:
+            raise SummaryError(f"已達任務總期限（{JOB_SECONDS} 秒），未交付部分結果。")
+        if budget.calls >= MAX_CALLS:
+            raise SummaryError(f"已達每次 {MAX_CALLS} 次模型呼叫上限，未交付部分結果；請縮小範圍。")
+        budget.calls += 1
+        try:
+            async with asyncio.timeout(min(REQUEST_SECONDS, remaining)):
+                return await call()
+        except TimeoutError:
+            raise SummaryError(
+                f"模型請求逾時或已達任務總期限（{JOB_SECONDS} 秒），未交付部分結果。"
+            ) from None
+        except RateLimited as exc:
+            wait = exc.retry_after
+            if retried or wait is None or clock() + wait >= budget.deadline:
+                raise
+            retried = True
+            await notify(f"Groq 速率限制：{label}等待 {math.ceil(wait)} 秒後重送（最多 1 次）。")
+            await sleep(wait)
 
 
 class SummaryWorkflow:
@@ -93,7 +127,7 @@ class SummaryWorkflow:
                 f"需要至少 {planned} 次模型呼叫，超過每次 {MAX_CALLS} 次上限；"
                 "請減少 limit 或縮短時間。未送出任何內容。"
             )
-        budget = _Budget(deadline)
+        budget = Budget(deadline)
         started = self.clock()
         partials: list[Partial] = []
         for number, request in enumerate(requests, 1):
@@ -197,43 +231,25 @@ class SummaryWorkflow:
         self,
         request: SummaryInput,
         api_key: str,
-        budget: _Budget,
+        budget: Budget,
         notify: Notify,
         label: str,
     ) -> SummaryResult:
-        retried = False
-        while True:
-            remaining = budget.deadline - self.clock()
-            if remaining <= 0:
-                raise SummaryError(f"已達任務總期限（{JOB_SECONDS} 秒），未交付部分結果。")
-            if budget.calls >= MAX_CALLS:
-                raise SummaryError(
-                    f"已達每次 {MAX_CALLS} 次模型呼叫上限，未交付部分結果；請縮小範圍。"
-                )
-            budget.calls += 1
-            try:
-                async with asyncio.timeout(min(REQUEST_SECONDS, remaining)):
-                    return await self.gateway.generate(request, api_key=api_key)
-            except TimeoutError:
-                raise SummaryError(
-                    f"模型請求逾時或已達任務總期限（{JOB_SECONDS} 秒），未交付部分結果。"
-                ) from None
-            except RateLimited as exc:
-                wait = exc.retry_after
-                if retried or wait is None or self.clock() + wait >= budget.deadline:
-                    raise
-                retried = True
-                await notify(
-                    f"Groq 速率限制：{label}等待 {math.ceil(wait)} 秒後重送（最多 1 次）。"
-                )
-                await self.sleep(wait)
+        return await bounded_call(
+            lambda: self.gateway.generate(request, api_key=api_key),
+            budget,
+            notify,
+            label,
+            clock=self.clock,
+            sleep=self.sleep,
+        )
 
     async def _merge(
         self,
         partials: list[Partial],
         context: dict,
         api_key: str,
-        budget: _Budget,
+        budget: Budget,
         notify: Notify,
     ) -> SummaryResult:
         level = partials

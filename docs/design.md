@@ -273,3 +273,13 @@ rm -rf "voice/data/$S"
 - `SummaryService.run_transcript` 與 `/summary` 共用分批流程與交付；標頭改為發言時間；各段不附連結，結尾只附一次逐字稿 TXT 訊息連結。`bot.py` 兩個摘要指令共用 `_run_summary_job`。
 - 頻道內使用（工作票 13）：`DiscordHistory.latest_transcript` 以一次 history 呼叫讀最近 100 則（Discord 單次上限），取最新一則本 bot 貼出且附件檔名符合者，其餘內容不讀取。`SummaryService.run_latest_transcript` 與 `run_transcript` 只差取得 TXT 的方式，權限、允許清單與交付前再查核相同。頻道內結果以 `edit_original_response` 取代「思考中」訊息；互動回覆走 webhook token，不需 Bot 在頻道的 Send Messages 權限。
 - 分批 Prompt 補一行「資料可能是語音辨識逐字稿、可能有同音錯字」。
+
+### 12.5 逐字稿問答（工作票 14）
+
+- 入口：`/asking` 與 message context menu「詢問逐字稿」。斜線指令的互動資料沒有被回覆訊息的欄位，所以不用回覆觸發；context menu 由 `target_id` 取得訊息，再以 Modal 輸入問題。語音程式只處理 `join`、`leave`，其他互動一律略過。[Application Commands](https://docs.discord.com/developers/interactions/application-commands)
+- `transcript_question.py`：不含 Discord 或供應商 SDK 型別。輸入為 `m001 [hh:mm:ss] 名稱: 內容` 精簡行，10/29 的 592 行逐字稿由 JSON 格式的 7 批降為 4 批（設 `max_input_tokens = 6000`）。各批獨立查詢；0 批有答案即不確定，1 批直接採用，多批只用各批答案與引用行做一次合併。
+- 不確定由程式判定：`validate_answer` 把 status=uncertain、無引用、引用不存在的行、空白答案一律轉成不確定，日誌只記引用數。
+- 主動等待：`_TokenWindow` 以 60 秒滑動窗記錄每批的輸入 token 加 `OUTPUT_TOKEN_ESTIMATE`（1,000，估計值；gateway 未回報實際用量），超過 `TOKENS_PER_MINUTE`（8,000，Developer plan 表列值）時先等待並告知。窗只算單次任務，同時多人發問仍可能遇到 429，由 `bounded_call` 依 retry-after 重送一次。`/summary`、`/voicesummary` 仍只靠 429 重送，未套用主動等待。
+- `bounded_call` 自 `SummaryWorkflow._generate` 抽出共用；`GroqGateway` 以 `_complete` 共用連線，`generate`／`answer` 只差 schema 與驗證。
+- 日誌 `question_done sources= batches= calls= seconds= status=` 只記數字與狀態，不記問題與答案。
+- 輸出超過 `max_output_tokens` 時 Groq 回 HTTP 400 `json_validate_failed`（2026-11-01 實測）。兩份問答 Prompt 都要求只寫重點、最多引用 5 個來源以降低發生機率；`GroqGateway` 把這個錯誤轉成可行動的訊息，日誌只記原因（`groq_generation_failed reason=`）或錯誤代碼（`groq_request_failed status= code=`）。`failed_generation` 可能含私人內容，不寫日誌也不顯示。

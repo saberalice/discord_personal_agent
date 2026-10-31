@@ -11,11 +11,17 @@ from .conversation import Conversation
 from .inspection import ChannelHistory, Query, SummaryApplication
 from .summary import SummaryError, render_summary, render_transcript_summary
 from .summary_workflow import JOB_SECONDS, LlmGateway, Notify, SummaryWorkflow
+from .transcript_question import TranscriptQuestion, render_answer
 from .voice_transcript import TranscriptFile, TranscriptLink, parse_transcript
 
 
 async def _quiet(text: str) -> None:
     pass
+
+
+def _require_key(api_key: str) -> None:
+    if not api_key.strip():
+        raise SummaryError("尚未設定 Groq 金鑰，請管理員在本地設定 SHARED_LLM_API_KEY 後重啟。")
 
 
 class TranscriptHistory(ChannelHistory, Protocol):
@@ -134,6 +140,48 @@ class SummaryService:
             await self.history.authorize(located, requester_id, voice_text=True)
         return text
 
+    async def answer_transcript(
+        self,
+        guild_id: int,
+        channel_id: int,
+        message_id: int | None,
+        question: str,
+        *,
+        requester_id: int,
+        api_key: str,
+        notify: Notify = _quiet,
+    ) -> str:
+        """message_id None means the channel's latest transcript."""
+        deadline = time.monotonic() + JOB_SECONDS
+        fetch = (
+            self.history.latest_transcript
+            if message_id is None
+            else lambda: self.history.transcript(message_id)
+        )
+        located, file, messages = await self._load_transcript(
+            guild_id, channel_id, fetch, requester_id
+        )
+        if not messages:
+            return "逐字稿沒有可查詢的內容，未呼叫 LLM。"
+        _require_key(api_key)
+        settings = self.settings
+        answer = await TranscriptQuestion(
+            self.gateway,
+            max_input_tokens=settings.llm.max_input_tokens,
+            timezone=settings.timezone,
+            privacy=settings.privacy,
+        ).ask(messages, question, api_key=api_key, deadline=deadline, notify=notify)
+        text = render_answer(
+            answer,
+            question,
+            TranscriptLink(guild_id, channel_id, file.message_id).url,
+            settings.timezone,
+            settings.privacy,
+        )
+        async with asyncio.timeout(60):
+            await self.history.authorize(located, requester_id, voice_text=True)
+        return text
+
     async def _load_transcript(self, guild_id, channel_id, fetch, requester_id):
         # Only locates the channel for the permission checks; the transcript sets the times.
         located = Query(guild_id, channel_id, None, datetime.now(UTC))
@@ -147,8 +195,7 @@ class SummaryService:
         return located, file, messages
 
     async def _summarize(self, conversation, query, *, topic, api_key, deadline, notify):
-        if not api_key.strip():
-            raise SummaryError("尚未設定 Groq 金鑰，請管理員在本地設定 SHARED_LLM_API_KEY 後重啟。")
+        _require_key(api_key)
         workflow = SummaryWorkflow(
             self.gateway,
             max_input_tokens=self.settings.llm.max_input_tokens,

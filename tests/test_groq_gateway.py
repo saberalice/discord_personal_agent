@@ -122,6 +122,58 @@ async def test_invalid_or_truncated_output_fails_and_closes_transport(finish, co
     assert "PRIVATE_INVALID_JSON" not in str(error.value)
 
 
+@pytest.mark.parametrize(
+    "generation,expected,reason",
+    [
+        ("max completion tokens reached before generating a valid document", "上限", "too_long"),
+        ('{"answer":"PRIVATE_GENERATION"', "格式", "invalid_output"),
+    ],
+)
+async def test_failed_generation_explains_itself_without_exposing_output(
+    generation, expected, reason, caplog
+):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Failed to generate JSON.",
+                    "type": "invalid_request_error",
+                    "code": "json_validate_failed",
+                    "failed_generation": generation,
+                }
+            },
+        )
+
+    gateway = GroqGateway(
+        model="openai/gpt-oss-20b", max_output_tokens=4000, transport=httpx.MockTransport(handler)
+    )
+    with caplog.at_level("WARNING"), pytest.raises(SummaryError) as error:
+        await gateway.generate(summary_input(), api_key="unit-test-key")
+    assert len(calls) == 1
+    assert expected in str(error.value)
+    assert f"reason={reason}" in caplog.text
+    assert "PRIVATE_GENERATION" not in str(error.value) + caplog.text
+
+
+async def test_other_bad_request_logs_only_the_provider_code(caplog):
+    def handler(request):
+        return httpx.Response(
+            400, json={"error": {"code": "some_code", "message": "PRIVATE_RESPONSE"}}
+        )
+
+    gateway = GroqGateway(
+        model="openai/gpt-oss-20b", max_output_tokens=4000, transport=httpx.MockTransport(handler)
+    )
+    with caplog.at_level("WARNING"), pytest.raises(SummaryError, match="HTTP 400"):
+        await gateway.generate(summary_input(), api_key="unit-test-key")
+    assert "status=400 code=some_code" in caplog.text
+    assert "PRIVATE_RESPONSE" not in caplog.text
+
+
 @pytest.mark.parametrize("header,expected", [({"retry-after": "3"}, 3.0), ({}, None)])
 async def test_rate_limit_exposes_retry_after_without_retrying(header, expected):
     from discord_personal_agent.summary import RateLimited
@@ -141,3 +193,44 @@ async def test_rate_limit_exposes_retry_after_without_retrying(header, expected)
         await gateway.generate(summary_input(), api_key="unit-test-key")
     assert error.value.retry_after == expected
     assert len(calls) == 1
+
+
+async def test_answer_uses_its_own_strict_schema_and_forces_unsupported_to_uncertain():
+    from discord_personal_agent.transcript_question import AnswerResult
+
+    seen = {}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "openai/gpt-oss-20b",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {"status": "answered", "answer": "猜的", "source_ids": ["m999"]}
+                            ),
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    gateway = GroqGateway(
+        model="openai/gpt-oss-20b", max_output_tokens=4000, transport=httpx.MockTransport(handler)
+    )
+    result = await gateway.answer(summary_input(), api_key="unit-test-key")
+    assert result == AnswerResult(status="uncertain", answer="", source_ids=[])
+    schema = seen["response_format"]["json_schema"]
+    assert schema["strict"] is True
+    assert "source_ids" in json.dumps(schema["schema"])
+    assert "segments" not in json.dumps(schema["schema"])

@@ -18,7 +18,8 @@ from .privacy import PrivacyError
 from .summary import SummaryError
 from .summary_service import SummaryService
 from .summary_workflow import Notify
-from .voice_transcript import TranscriptLink
+from .transcript_question import MAX_QUESTION_CHARS
+from .voice_transcript import FILENAME, TranscriptLink
 
 logger = logging.getLogger(__name__)
 SUMMARY_MAX_BYTES = 8 * 1024 * 1024
@@ -41,6 +42,11 @@ HELP = (
     "- **在逐字稿所在頻道下指令**：自動摘要最近 100 則內最新的逐字稿，結果公開貼在頻道\n"
     "- **私訊 Bot**：`/voicesummary message:<逐字稿訊息連結>`，結果只私訊給你\n"
     "在 TXT 那則訊息上按右鍵 →「複製訊息連結」；topic 選填，該頻道須在允許清單內。\n"
+    "\n"
+    "### ❓ 詢問逐字稿 `/asking`\n"
+    "- `/asking question:<問題>`：問本頻道最新的逐字稿，也可用 message 指定本頻道的訊息連結\n"
+    "- 或對 TXT 那則訊息按右鍵（手機長按）→ 應用程式 →「詢問逐字稿」\n"
+    "問題與答案公開貼在頻道；找不到依據時回答不確定。長逐字稿會分段查詢，可能要等幾分鐘。\n"
     "\n"
     "### ⚠️ 限制與隱私\n"
     "- 只能摘要管理員允許的頻道，你和 Bot 都要能檢視並讀取歷史訊息\n"
@@ -87,10 +93,12 @@ def render_inspection(
     return text
 
 
-async def send_summary(send: Callable[..., Awaitable[object]], text: str) -> None:
+async def send_summary(
+    send: Callable[..., Awaitable[object]], text: str, *, title: str = "頻道摘要"
+) -> None:
     """Deliver an embed, or a short preview with the complete summary in memory."""
     if len(text) <= 3500:
-        await send(embed=discord.Embed(title="頻道摘要", description=text))
+        await send(embed=discord.Embed(title=title, description=text))
         return
     payload = text.encode("utf-8")
     if len(payload) > SUMMARY_MAX_BYTES:
@@ -100,7 +108,7 @@ async def send_summary(send: Callable[..., Awaitable[object]], text: str) -> Non
         io.BytesIO(payload) as buffer,
         closing(discord.File(buffer, filename="summary.txt")) as file,
     ):
-        await send(embed=discord.Embed(title="頻道摘要", description=preview), file=file)
+        await send(embed=discord.Embed(title=title, description=preview), file=file)
 
 
 def _voice_command(name: str, description: str) -> app_commands.Command:
@@ -115,6 +123,27 @@ def _voice_command(name: str, description: str) -> app_commands.Command:
     )
     command = app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)(command)
     return app_commands.allowed_installs(guilds=True, users=False)(command)
+
+
+class QuestionModal(discord.ui.Modal, title="詢問逐字稿"):
+    question = discord.ui.TextInput(
+        label="問題",
+        style=discord.TextStyle.paragraph,
+        placeholder="例如：誰提到週六要開會？",
+        max_length=MAX_QUESTION_CHARS,
+    )
+
+    def __init__(self, submit, failed):
+        super().__init__(timeout=600)
+        self.submit = submit
+        self.failed = failed
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await self.submit(interaction, self.question.value)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        # The default handler logs the traceback; keep this to the same safe path as commands.
+        await self.failed(interaction, error)
 
 
 class PersonalAgent(discord.Client):
@@ -202,8 +231,44 @@ class PersonalAgent(discord.Client):
 
             await self._run_summary_job(interaction, job, public_in_guild=True)
 
+        @self.tree.command(name="asking", description="詢問語音逐字稿的內容；預設問最新一份")
+        @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+        @app_commands.allowed_installs(guilds=True, users=False)
+        @app_commands.describe(
+            question="想問的問題，例如：誰提到週六要開會？",
+            message="選填：本頻道的逐字稿訊息連結；省略時問最近 100 則內最新的逐字稿",
+        )
+        async def asking(
+            interaction: discord.Interaction,
+            question: app_commands.Range[str, 1, MAX_QUESTION_CHARS],
+            message: str | None = None,
+        ):
+            await self._ask(interaction, question, link=message)
+
+        @self.tree.context_menu(name="詢問逐字稿")
+        @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+        @app_commands.allowed_installs(guilds=True, users=False)
+        async def ask_about_message(interaction: discord.Interaction, message: discord.Message):
+            if not self._is_transcript(message):
+                await interaction.response.send_message(
+                    "這則訊息不是本 Bot 貼出的語音逐字稿。", ephemeral=True
+                )
+                return
+
+            async def submit(submitted: discord.Interaction, question: str) -> None:
+                await self._ask(submitted, question, message_id=message.id)
+
+            await interaction.response.send_modal(QuestionModal(submit, self.command_error))
+
         for name, description in VOICE_COMMANDS:
             self.tree.add_command(_voice_command(name, description))
+
+    def _is_transcript(self, message: discord.Message) -> bool:
+        return (
+            self.user is not None
+            and message.author.id == self.user.id
+            and any(FILENAME.fullmatch(item.filename) for item in message.attachments)
+        )
 
     @staticmethod
     def _link_target(
@@ -219,12 +284,40 @@ class PersonalAgent(discord.Client):
             )
         return target
 
+    async def _ask(
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        *,
+        link: str | None = None,
+        message_id: int | None = None,
+    ) -> None:
+        guild_id, channel_id = interaction.guild_id, interaction.channel_id
+
+        async def job(service: ServiceFactory, notify: Notify, located: dict) -> str:
+            located.update(guild_id=guild_id, channel_id=channel_id)
+            chosen = message_id
+            if link:
+                chosen = self._link_target(link, guild_id, channel_id, located).message_id
+            return await service().answer_transcript(
+                guild_id,
+                channel_id,
+                chosen,
+                question,
+                requester_id=interaction.user.id,
+                api_key=self.api_key,
+                notify=notify,
+            )
+
+        await self._run_summary_job(interaction, job, public_in_guild=True, title="逐字稿問答")
+
     async def _run_summary_job(
         self,
         interaction: discord.Interaction,
         job: Callable[[ServiceFactory, Notify, dict], Awaitable[str]],
         *,
         public_in_guild: bool = False,
+        title: str = "頻道摘要",
     ) -> None:
         """Lifecycle shared by summary commands: one job per user, delivered by DM or in place."""
         in_guild = interaction.guild_id is not None
@@ -272,10 +365,10 @@ class PersonalAgent(discord.Client):
                         )
 
                     with discord_operation("send_channel", "傳送結果到頻道"):
-                        await send_summary(replace_placeholder, text)
+                        await send_summary(replace_placeholder, text, title=title)
                     return
                 with discord_operation("send_dm", "傳送結果私訊"):
-                    await send_summary(interaction.user.send, text)
+                    await send_summary(interaction.user.send, text, title=title)
             await interaction.edit_original_response(content="摘要處理完成，結果已送到此私訊。")
         except (InspectionError, SummaryError, PrivacyError) as exc:
             if isinstance(exc, InspectionError):

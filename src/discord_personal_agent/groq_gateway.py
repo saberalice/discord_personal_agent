@@ -6,9 +6,12 @@ import groq
 import httpx
 from langchain_groq import ChatGroq
 from langsmith import tracing_context
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
 from .summary import RateLimited, SummaryError, SummaryInput, SummaryResult, validate_summary
+from .transcript_question import AnswerResult, validate_answer
+
+logger = logging.getLogger(__name__)
 
 
 class GroqGateway:
@@ -24,6 +27,12 @@ class GroqGateway:
         self.transport = transport
 
     async def generate(self, request: SummaryInput, *, api_key: str) -> SummaryResult:
+        return validate_summary(await self._complete(request, SummaryResult, api_key), request)
+
+    async def answer(self, request: SummaryInput, *, api_key: str) -> AnswerResult:
+        return validate_answer(await self._complete(request, AnswerResult, api_key), request)
+
+    async def _complete(self, request: SummaryInput, schema: type[BaseModel], api_key: str) -> str:
         # SDK debug logging can include request bodies. This boundary never enables it.
         logging.getLogger("groq").setLevel(logging.WARNING)
         try:
@@ -52,7 +61,7 @@ class GroqGateway:
                             callbacks=[],
                         )
                         chain = model.with_structured_output(
-                            SummaryResult, method="json_schema", strict=True, include_raw=True
+                            schema, method="json_schema", strict=True, include_raw=True
                         )
                         with tracing_context(enabled=False):
                             response = await chain.ainvoke(
@@ -63,7 +72,7 @@ class GroqGateway:
                 raise SummaryError("模型未完整完成輸出，請縮小範圍後重試。")
             if response["parsing_error"] is not None or not isinstance(raw.content, str):
                 raise SummaryError("模型回覆格式無效，未交付結果。")
-            return validate_summary(raw.content, request)
+            return raw.content
         except groq.AuthenticationError:
             raise SummaryError("Groq 驗證失敗，請管理員檢查本地 API Key。") from None
         except groq.RateLimitError as exc:
@@ -74,7 +83,24 @@ class GroqGateway:
         except (groq.APITimeoutError, groq.APIConnectionError):
             raise SummaryError("Groq 連線失敗或逾時，未自動重試。") from None
         except groq.APIStatusError as exc:
-            raise SummaryError(f"Groq 請求失敗（HTTP {exc.status_code}），未自動重試。") from None
+            raise _status_error(exc) from None
+
+
+def _status_error(exc: groq.APIStatusError) -> SummaryError:
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error", body)
+    error = error if isinstance(error, dict) else {}
+    code = error.get("code")
+    if code != "json_validate_failed":
+        logger.warning("groq_request_failed status=%d code=%s", exc.status_code, code)
+        return SummaryError(f"Groq 請求失敗（HTTP {exc.status_code}），未自動重試。")
+    # failed_generation may hold model output built from private messages, so it is only
+    # compared against the provider's fixed sentence, never logged or shown.
+    too_long = "max completion tokens" in str(error.get("failed_generation"))
+    logger.warning("groq_generation_failed reason=%s", "too_long" if too_long else "invalid_output")
+    if too_long:
+        return SummaryError("模型回覆超過輸出上限，未交付結果；請改問更具體的問題或縮小範圍。")
+    return SummaryError("模型未能產生符合格式的回覆，未交付結果；可再試一次。")
 
 
 def _retry_after(response: httpx.Response) -> float | None:
